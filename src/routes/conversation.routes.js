@@ -6,6 +6,7 @@ import {
   getConversationEventsList,
   replayConversationEndpoint,
   stopConversation,
+  deleteConversation,
   raiseConversationQuery,
 } from '../controllers/conversation.controller.js';
 
@@ -19,5 +20,6 @@ router.get('/:conversationId/messages', getConversationMessagesList);
 router.get('/:conversationId/events', getConversationEventsList);
 router.get('/:conversationId/replay', replayConversationEndpoint);
 router.post('/:conversationId/stop', stopConversation);
+router.delete('/:conversationId', deleteConversation);
 
 export default router;

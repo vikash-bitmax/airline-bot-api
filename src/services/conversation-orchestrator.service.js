@@ -19,6 +19,7 @@ import {
 import { createMessage, getConversationMessages } from './message.service.js';
 import { recordConversationEvent, updateConversationProgress } from './conversation-state.service.js';
 import { interpretAgentMessage, validateAuthoritativeEvidence } from './event-interpreter.service.js';
+import { calculateHumanTimings, sleep } from './human-typing.service.js';
 import GeminiProvider from '../ai/providers/gemini.provider.js';
 import crmClient from '../integrations/crm/crm-client.js';
 import crmSocketClient from '../integrations/crm/crm-socket.client.js';
@@ -140,7 +141,7 @@ export class ConversationOrchestrator {
       let crmSession = null;
       const category = customFixture?.category || scenario.category || 'FLIGHT_DISRUPTION';
 
-      if (useMockCrm || simulationRun.environment === 'TEST') {
+      if (useMockCrm) {
         crmSession = await mockCrmClient.startCustomerSession({
           customerName: customerFixture.facts.passengerName,
           passengerEmail: customerFixture.facts.passengerEmail,
@@ -183,7 +184,16 @@ export class ConversationOrchestrator {
               agentMessage: msg.text,
               senderName: msg.senderName,
               crmChatId: crmSession.chatId,
+              crmToken: crmSession.customerSessionToken,
               useMockCrm: false,
+            });
+          },
+          onCrmEvent: (event) => {
+            this.handleCrmStatusEvent({
+              conversationId: conversation._id,
+              conversationPublicId: conversation.conversationId,
+              crmChatId: crmSession.chatId,
+              event,
             });
           },
         });
@@ -207,14 +217,18 @@ export class ConversationOrchestrator {
     return conversation;
   }
 
-  async handleAgentResponse({ conversationId, agentMessage, senderName, crmChatId, useMockCrm }) {
+  async handleAgentResponse({ conversationId, agentMessage, senderName, crmChatId, crmToken, useMockCrm }) {
     logger.info(`Received agent message for conversation ${conversationId}: "${agentMessage}"`);
 
     const conv = await Conversation.findById(conversationId)
       .populate('persona')
       .populate('scenario');
 
-    if (!conv || conv.status !== 'ACTIVE') return;
+    const ACTIVE_STATUSES = ['ACTIVE', 'RUNNING', 'WAITING', 'NEW', 'WAITING_FOR_AGENT', 'WAITING_FOR_CUSTOMER'];
+    if (!conv || !ACTIVE_STATUSES.includes(conv.status)) {
+      logger.warn(`Skipping message processing for conversation ${conversationId}: status is "${conv?.status}"`);
+      return;
+    }
 
     // 1. Persist Agent Message
     await createMessage({
@@ -229,14 +243,15 @@ export class ConversationOrchestrator {
     let eventType = interpreted?.eventType || 'AGENT_ACKNOWLEDGED';
 
     // 3. Advance scenario state machine
-    const scenario = conv.scenario;
+    const scenario = conv.scenario || {};
+    const terminalStates = Array.isArray(scenario.terminalStates) ? scenario.terminalStates : [];
     const currentScenarioState = {
       currentState: conv.scenarioProgress.currentState,
       visitedStates: conv.scenarioProgress.visitedStates,
       turnCount: conv.scenarioProgress.turnCount,
       acceptedTransitions: conv.scenarioProgress.acceptedTransitions || 0,
-      isTerminal: scenario.terminalStates.includes(conv.scenarioProgress.currentState),
-      maxTurns: scenario.maxTurns,
+      isTerminal: terminalStates.includes(conv.scenarioProgress.currentState),
+      maxTurns: scenario.maxTurns || 20,
     };
 
     const transitionResult = validateAndApplyTransition({
@@ -281,6 +296,27 @@ export class ConversationOrchestrator {
       return;
     }
 
+    // ── PHASE 1: "Reading" Delay ──
+    // Simulate the customer reading the agent's message before reacting
+    const chatId = conv.crm?.externalConversationId || crmChatId;
+    const persona = conv.persona || conv.personaSnapshot || {};
+    const turnNumber = conv.scenarioProgress.turnCount;
+
+    // Pre-calculate reading + thinking delay (we don't know reply length yet)
+    const preTimings = calculateHumanTimings({
+      agentMessageLength: (agentMessage || '').length,
+      replyLength: 80, // estimate, will refine after generation
+      persona,
+      turnNumber,
+    });
+
+    logger.info(`Simulating reading delay: ${preTimings.readingDelayMs}ms for ${conv.conversationId}`);
+    await sleep(preTimings.readingDelayMs);
+
+    // ── PHASE 2: "Thinking" Delay ──
+    logger.info(`Simulating thinking pause: ${preTimings.thinkingDelayMs}ms for ${conv.conversationId}`);
+    await sleep(preTimings.thinkingDelayMs);
+
     // 6. Generate Next Customer Turn
     const messages = await getConversationMessages(conv._id);
     const personaContext = buildPersonaPromptContext({
@@ -305,6 +341,29 @@ export class ConversationOrchestrator {
 
     const customerReplyText = llmResult.output.messageParts.map((p) => p.text).join(' ');
 
+    // ── PHASE 3: "Typing" with Live Indicator ──
+    // Recalculate typing duration with actual reply length
+    const finalTimings = calculateHumanTimings({
+      agentMessageLength: (agentMessage || '').length,
+      replyLength: customerReplyText.length,
+      persona,
+      turnNumber,
+    });
+
+    // Show typing indicator on CRM
+    if (chatId && !useMockCrm) {
+      crmSocketClient.emitTyping(conv.conversationId, chatId, true);
+      logger.info(`Typing indicator ON for ${chatId}, duration: ${finalTimings.typingDurationMs}ms`);
+    }
+
+    // Wait for the typing duration
+    await sleep(finalTimings.typingDurationMs);
+
+    // Stop typing indicator
+    if (chatId && !useMockCrm) {
+      crmSocketClient.emitTyping(conv.conversationId, chatId, false);
+    }
+
     // 7. Persist and send customer turn
     await createMessage({
       conversationId: conv._id,
@@ -317,13 +376,79 @@ export class ConversationOrchestrator {
     });
 
     // Deliver to CRM
-    const token = conv.crm?.customerSessionToken;
-    const chatId = conv.crm?.externalConversationId || crmChatId;
+    const token = crmToken || conv.crm?.customerSessionToken;
 
     if (useMockCrm) {
       await mockCrmClient.sendCustomerMessage({ chatId, text: customerReplyText });
     } else if (chatId && token) {
+      logger.info(`Delivering customer reply to CRM chat ${chatId}: "${customerReplyText.slice(0, 80)}..."`);
       await crmClient.sendCustomerMessage({ chatId, text: customerReplyText, token });
+    } else {
+      logger.warn(`Could not deliver customer reply to CRM: missing chatId (${chatId}) or token (${Boolean(token)})`);
+    }
+  }
+
+  /**
+   * Handle CRM lifecycle events (RESOLVED, CLOSED, ESCALATED, etc.)
+   * Syncs the bot Conversation status with the CRM's current state.
+   */
+  async handleCrmStatusEvent({ conversationId, conversationPublicId, crmChatId, event }) {
+    const { eventType, data } = event || {};
+    const crmStatus = data?.status;
+    logger.info(`CRM status event for ${conversationPublicId}: type=${eventType}, crmStatus=${crmStatus}`);
+
+    if (!crmStatus) return;
+
+    // Map CRM statuses to bot-side statuses
+    const STATUS_MAP = {
+      RESOLVED: 'RESOLVED',
+      CLOSED: 'CLOSED',
+      ESCALATED: 'ESCALATED',
+      TRANSFERRED: 'TRANSFERRED',
+      ABANDONED: 'ABANDONED',
+      ACTIVE: 'ACTIVE',
+      NEW: 'NEW',
+      WAITING: 'WAITING',
+    };
+
+    const mappedStatus = STATUS_MAP[crmStatus];
+    if (!mappedStatus) {
+      logger.warn(`Unknown CRM status "${crmStatus}" for ${conversationPublicId}, skipping sync`);
+      return;
+    }
+
+    try {
+      const conv = await Conversation.findById(conversationId);
+      if (!conv) return;
+
+      // Don't update if already in a terminal state
+      const TERMINAL = ['COMPLETED', 'CONCLUDED', 'FAILED', 'CANCELLED'];
+      if (TERMINAL.includes(conv.status)) {
+        logger.info(`Bot conversation ${conversationPublicId} already in terminal state "${conv.status}", skipping CRM sync`);
+        return;
+      }
+
+      // Update bot conversation status
+      conv.status = mappedStatus;
+      if (crmStatus === 'RESOLVED') conv.endedAt = new Date();
+      if (crmStatus === 'CLOSED') conv.endedAt = conv.endedAt || new Date();
+      await conv.save();
+
+      logger.info(`Bot conversation ${conversationPublicId} status synced to "${mappedStatus}" from CRM`);
+
+      // Broadcast to bot frontend
+      broadcastEvent('conversation:progress', {
+        conversationId: conversationPublicId,
+        status: mappedStatus,
+        crmStatus,
+      });
+
+      // If resolved or closed, also conclude on bot side
+      if (crmStatus === 'RESOLVED' || crmStatus === 'CLOSED') {
+        await this.concludeConversation(conversationId, `CRM_${crmStatus}`);
+      }
+    } catch (err) {
+      logger.error(`Failed to sync CRM status for ${conversationPublicId}: ${err.message}`);
     }
   }
 
@@ -334,9 +459,14 @@ export class ConversationOrchestrator {
     // Run deterministic evaluation
     const evalResult = await evaluateConversation(conv._id);
 
+    const finalStatus =
+      reason === 'CRM_RESOLVED' ? 'RESOLVED' :
+      reason === 'CRM_CLOSED' ? 'CLOSED' :
+      'COMPLETED';
+
     await updateConversationProgress({
       conversationId: conv._id,
-      status: 'COMPLETED',
+      status: finalStatus,
       endReason: reason,
     });
 

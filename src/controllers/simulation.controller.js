@@ -1,9 +1,12 @@
 import { v4 as uuidv4 } from 'uuid';
 import SimulationRun from '../models/SimulationRun.model.js';
 import Conversation from '../models/Conversation.model.js';
-import { addSimulationJob } from '../queues/simulation.queue.js';
+import ConversationMessage from '../models/ConversationMessage.model.js';
+import ConversationEvent from '../models/ConversationEvent.model.js';
+import crmSocketClient from '../integrations/crm/crm-socket.client.js';
 import conversationOrchestrator from '../services/conversation-orchestrator.service.js';
 import { broadcastEvent } from '../../server.js';
+import logger from '../utils/logger.js';
 
 export const createSimulation = async (req, res, next) => {
   try {
@@ -100,29 +103,30 @@ export const startSimulation = async (req, res, next) => {
 
     broadcastEvent('simulation:started', { runId: run.runId });
 
-    // Spawn execution either via BullMQ queue or directly in orchestrator
+    // Spawn execution across personas and scenarios
     const personas = run.selection?.personaIds || [];
     const scenarios = run.selection?.scenarioIds || [];
+    const totalCustomers = run.configuration?.totalCustomers || 1;
 
     for (const pid of personas) {
       for (const sid of scenarios) {
-        // Enqueue or execute async
-        addSimulationJob('START_CONVERSATION', {
-          runId: run.runId,
-          personaId: pid,
-          scenarioId: sid,
-          randomSeed: run.configuration?.randomSeed,
-          useMockCrm: run.environment === 'TEST',
-        }).catch(() => {
-          // Fallback direct run if queue is offline
-          conversationOrchestrator.startConversation({
-            runId: run.runId,
-            personaId: pid,
-            scenarioId: sid,
-            randomSeed: run.configuration?.randomSeed,
-            useMockCrm: run.environment === 'TEST',
-          });
-        });
+        for (let i = 0; i < totalCustomers; i++) {
+          const conversationSeed = `${run.configuration?.randomSeed || 'seed'}-${i}`;
+          // Launch directly so simulation starts immediately in all environments
+          conversationOrchestrator
+            .startConversation({
+              runId: run.runId,
+              personaId: pid,
+              scenarioId: sid,
+              randomSeed: conversationSeed,
+              useMockCrm: run.environment === 'TEST',
+            })
+            .catch((err) => {
+              logger.error(
+                `Failed to launch conversation ${i + 1}/${totalCustomers} for run ${run.runId}: ${err.message}`
+              );
+            });
+        }
       }
     }
 
@@ -175,6 +179,44 @@ export const cancelSimulation = async (req, res, next) => {
     if (!run) return res.status(404).json({ success: false, message: 'Simulation run not found' });
     broadcastEvent('simulation:cancelled', { runId: run.runId });
     return res.status(200).json({ success: true, data: run });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const deleteSimulation = async (req, res, next) => {
+  try {
+    const { runId } = req.params;
+    const run = await SimulationRun.findOne({ runId });
+    if (!run) {
+      return res.status(404).json({ success: false, message: 'Simulation run not found' });
+    }
+
+    // Find all conversations belonging to this simulation run
+    const conversations = await Conversation.find({ simulationRun: run._id })
+      .select('_id conversationId')
+      .lean();
+    const convIds = conversations.map((c) => c._id);
+
+    // Disconnect any active sockets for these conversations
+    conversations.forEach((c) => {
+      crmSocketClient.disconnectConversation(c.conversationId);
+    });
+
+    // Cascade delete: messages, events, conversations, and the simulation run
+    await Promise.all([
+      ConversationMessage.deleteMany({ conversation: { $in: convIds } }),
+      ConversationEvent.deleteMany({ conversation: { $in: convIds } }),
+      Conversation.deleteMany({ simulationRun: run._id }),
+      SimulationRun.deleteOne({ _id: run._id }),
+    ]);
+
+    broadcastEvent('simulation:deleted', { runId });
+
+    return res.status(200).json({
+      success: true,
+      message: `Simulation ${runId} and ${convIds.length} associated conversation(s) deleted successfully`,
+    });
   } catch (err) {
     next(err);
   }

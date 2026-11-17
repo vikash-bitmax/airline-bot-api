@@ -82,30 +82,105 @@ export class GeminiProvider extends LlmProviderInterface {
   }
 
   generateSyntheticFallback(context, startTime) {
-    const { personaContext, scenarioContext, permittedFacts } = context;
+    const { personaContext, scenarioContext, permittedFacts, transcript = [] } = context;
     let messageText = '';
 
-    // Deterministic contextual templates
+    // Count how many CUSTOMER messages already exist to vary responses
+    const customerTurns = transcript.filter((m) => m.senderType === 'CUSTOMER').length;
+    const agentTurns = transcript.filter((m) => m.senderType === 'AGENT').length;
+    const lastAgentMsg = [...transcript].reverse().find((m) => m.senderType === 'AGENT');
+    const lastAgentText = (lastAgentMsg?.content || '').toLowerCase();
+
+    // ── State-aware contextual templates with variation ──
     if (scenarioContext.currentState === 'INTRODUCE_ISSUE') {
-      if (personaContext.tone === 'polite') {
-        messageText = `Hello, my flight ${permittedFacts.flightNumber || ''} on route ${permittedFacts.route || ''} has an issue. Can you please assist me?`;
-      } else if (personaContext.tone === 'aggressive' || personaContext.emotionalState === 'angry') {
-        messageText = `My flight ${permittedFacts.flightNumber || ''} has been disrupted! I need this resolved right now!`;
-      } else if (personaContext.messageLength === 'single_line') {
-        messageText = `Need help with flight ${permittedFacts.flightNumber || 'cancellation'}.`;
+      // First contact — only use this on the very first turn
+      if (customerTurns === 0) {
+        const templates = [
+          `Hello, my flight ${permittedFacts.flightNumber || ''} on route ${permittedFacts.route || ''} has been cancelled. Can you please help me with rebooking or a refund?`,
+          `Hi there, I just found out that my flight ${permittedFacts.flightNumber || ''} has been disrupted. I really need assistance with this.`,
+          `Good day, I'm ${permittedFacts.passengerName || 'a passenger'} and my upcoming flight ${permittedFacts.flightNumber || ''} seems to have been cancelled. Could you look into this for me?`,
+          `Hi, I received a notification that flight ${permittedFacts.flightNumber || ''} has been cancelled. I need help finding an alternative or getting a refund please.`,
+        ];
+        if (personaContext.tone === 'aggressive' || personaContext.emotionalState === 'angry') {
+          messageText = `This is unacceptable! My flight ${permittedFacts.flightNumber || ''} was cancelled without proper notice. I need this sorted out immediately!`;
+        } else if (personaContext.tone === 'anxious') {
+          messageText = `Um, hi... I'm really worried because my flight ${permittedFacts.flightNumber || ''} seems to be cancelled? I'm not sure what to do. Can you please help me?`;
+        } else {
+          messageText = templates[Math.floor(Math.random() * templates.length)];
+        }
       } else {
-        messageText = `Hi, I am contacting support regarding ${scenarioContext.customerObjective}.`;
+        // Follow-up while still in INTRODUCE_ISSUE
+        if (
+          lastAgentText.includes('detail') || lastAgentText.includes('pnr') ||
+          lastAgentText.includes('booking') || lastAgentText.includes('name') ||
+          lastAgentText.includes('info') || lastAgentText.includes('can i get')
+        ) {
+          messageText = `Sure, my name is ${permittedFacts.passengerName || 'Vikash Sharma'}. Booking reference is ${permittedFacts.pnr || 'SW9941'}, flight ${permittedFacts.flightNumber || 'SW-101'}.`;
+        } else {
+          const followUps = [
+            `Yes, my flight is ${permittedFacts.flightNumber || 'SW-101'}. Could you please check what options I have?`,
+            'I really need to get this resolved as soon as possible. What alternatives do you have?',
+            `Could you please look into my flight on route ${permittedFacts.route || 'this journey'}?`,
+          ];
+          messageText = followUps[Math.floor(Math.random() * followUps.length)];
+        }
       }
+
     } else if (scenarioContext.currentState === 'PROVIDE_BOOKING_DETAILS') {
-      if (permittedFacts.pnr) {
-        messageText = `My booking reference is ${permittedFacts.pnr} under name ${permittedFacts.passengerName || ''}.`;
+      // Agent asked for details — provide them naturally
+      if (lastAgentText.includes('pnr') || lastAgentText.includes('booking') || lastAgentText.includes('reference') || lastAgentText.includes('details')) {
+        if (permittedFacts.pnr) {
+          const templates = [
+            `Sure, my PNR is ${permittedFacts.pnr}. The booking is under ${permittedFacts.passengerName || 'my name'}.`,
+            `Of course. My booking reference is ${permittedFacts.pnr}, name ${permittedFacts.passengerName || ''}, flight ${permittedFacts.flightNumber || ''}.`,
+            `Here you go — PNR: ${permittedFacts.pnr}. It's for flight ${permittedFacts.flightNumber || ''} on ${permittedFacts.travelDate || 'the upcoming date'}.`,
+            `My booking reference number is ${permittedFacts.pnr}. The passenger name is ${permittedFacts.passengerName || 'registered on the ticket'}.`,
+          ];
+          messageText = templates[Math.floor(Math.random() * templates.length)];
+        } else {
+          messageText = `I'm sorry, I don't have my booking reference handy at the moment. Is there another way you can look it up?`;
+        }
       } else {
-        messageText = `I do not have my booking reference with me right now.`;
+        // Generic detail-providing response
+        messageText = `Let me give you my details. My name is ${permittedFacts.passengerName || 'on the booking'}, flight ${permittedFacts.flightNumber || ''}, PNR ${permittedFacts.pnr || 'I will check'}.`;
       }
-    } else if (scenarioContext.currentState === 'DISCUSS_OPTIONS' || scenarioContext.currentState === 'WAIT_FOR_CUSTOMER') {
-      messageText = `I would like to proceed with the full refund option, please.`;
+
+    } else if (scenarioContext.currentState === 'DISCUSS_OPTIONS') {
+      const templates = [
+        'What options do I have? I would prefer to be rebooked on the next available flight if possible.',
+        'Could you tell me what alternatives are available? I need to reach my destination as soon as possible.',
+        'I would like to know my options. Is there a direct flight available, or would I need a connecting flight?',
+        'What are my choices here? I am flexible with timing but would prefer to fly today if possible.',
+      ];
+      messageText = templates[Math.floor(Math.random() * templates.length)];
+
+    } else if (scenarioContext.currentState === 'WAIT_FOR_CUSTOMER') {
+      // Customer confirming their choice
+      if (lastAgentText.includes('refund')) {
+        messageText = 'Yes, I would like to go ahead with the full refund back to my original payment method, please.';
+      } else if (lastAgentText.includes('rebook') || lastAgentText.includes('alternative')) {
+        messageText = 'That sounds good. Please go ahead and rebook me on that alternative flight. Thank you.';
+      } else {
+        const templates = [
+          'Yes, that works for me. Please go ahead and process that.',
+          'Okay, I agree with that option. Can you confirm once it is done?',
+          'That sounds reasonable. Please proceed and let me know when it is confirmed.',
+        ];
+        messageText = templates[Math.floor(Math.random() * templates.length)];
+      }
+
+    } else if (scenarioContext.currentState === 'COMPLETED') {
+      messageText = 'Thank you very much for your help. I appreciate the quick resolution. Have a good day!';
+
     } else {
-      messageText = `Thank you for your assistance. Please confirm when this is completed.`;
+      // Generic conversational filler based on agent's last message
+      if (lastAgentText.includes('anything else') || lastAgentText.includes('help you with')) {
+        messageText = 'No, that should be everything. Thank you for your assistance!';
+      } else if (lastAgentText.includes('sorry') || lastAgentText.includes('apologize')) {
+        messageText = 'I understand, these things happen. I just need to make sure I can still reach my destination.';
+      } else {
+        messageText = 'Okay, understood. Please let me know what the next steps are.';
+      }
     }
 
     const fallbackOutput = {
@@ -114,14 +189,14 @@ export class GeminiProvider extends LlmProviderInterface {
       intent: scenarioContext.currentState,
       speechAct: 'STATEMENT',
       emotionExpression: (personaContext.emotionalState || 'neutral').toUpperCase(),
-      behaviorTags: [personaContext.tone.toUpperCase()],
+      behaviorTags: [(personaContext.tone || 'neutral').toUpperCase()],
     };
 
     return {
       output: fallbackOutput,
       metadata: {
         provider: 'SYNTHETIC_FALLBACK',
-        model: 'deterministic-v1',
+        model: 'deterministic-v2',
         latencyMs: Date.now() - startTime,
         tokens: 0,
       },

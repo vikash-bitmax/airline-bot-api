@@ -4,6 +4,7 @@ import ConversationMessage from '../models/ConversationMessage.model.js';
 import ConversationEvent from '../models/ConversationEvent.model.js';
 import SimulationRun from '../models/SimulationRun.model.js';
 import conversationOrchestrator from '../services/conversation-orchestrator.service.js';
+import { broadcastEvent } from '../../server.js';
 
 export const getConversations = async (req, res, next) => {
   try {
@@ -141,6 +142,32 @@ export const stopConversation = async (req, res, next) => {
   }
 };
 
+export const deleteConversation = async (req, res, next) => {
+  try {
+    const { conversationId } = req.params;
+    const conv = await Conversation.findOne({ conversationId });
+    if (!conv) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
+    // Delete associated messages, events, and conversation
+    await Promise.all([
+      ConversationMessage.deleteMany({ conversation: conv._id }),
+      ConversationEvent.deleteMany({ conversation: conv._id }),
+      Conversation.deleteOne({ _id: conv._id }),
+    ]);
+
+    broadcastEvent('conversation:deleted', { conversationId });
+
+    return res.status(200).json({
+      success: true,
+      message: `Conversation ${conversationId} and associated messages deleted successfully`,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const raiseConversationQuery = async (req, res, next) => {
   try {
     const {
@@ -155,14 +182,19 @@ export const raiseConversationQuery = async (req, res, next) => {
       useMockCrm = false,
     } = req.body || {};
 
-    // Ensure an ad-hoc or active simulation run exists
-    let run = await SimulationRun.findOne({ name: 'On-Demand Support Queries' });
+    // Ensure an active ad-hoc simulation run exists
+    let run = await SimulationRun.findOne({
+      name: 'On-Demand Support Queries',
+      status: { $in: ['RUNNING', 'PENDING'] },
+    });
+
     if (!run) {
       run = await SimulationRun.create({
         runId: `RUN-ADHOC-${uuidv4().substring(0, 6).toUpperCase()}`,
         name: 'On-Demand Support Queries',
         environment: useMockCrm ? 'TEST' : 'LOCAL',
         status: 'RUNNING',
+        startedAt: new Date(),
         selection: { personaIds: [personaId], scenarioIds: [scenarioId], strategy: 'MANUAL' },
         configuration: {
           totalCustomers: 1,
@@ -171,6 +203,10 @@ export const raiseConversationQuery = async (req, res, next) => {
           randomSeed: uuidv4(),
         },
       });
+    } else {
+      run.environment = useMockCrm ? 'TEST' : 'LOCAL';
+      run.status = 'RUNNING';
+      await run.save();
     }
 
     const conversation = await conversationOrchestrator.startConversation({

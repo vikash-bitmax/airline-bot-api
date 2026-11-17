@@ -5,14 +5,15 @@
  */
 
 export const initializeScenarioState = (scenario) => {
+  const terminalStates = Array.isArray(scenario?.terminalStates) ? scenario.terminalStates : [];
   return {
-    currentState: scenario.initialState,
-    visitedStates: [scenario.initialState],
+    currentState: scenario?.initialState || 'INITIAL',
+    visitedStates: [scenario?.initialState || 'INITIAL'],
     turnCount: 0,
     acceptedTransitions: 0,
-    isTerminal: scenario.terminalStates.includes(scenario.initialState),
-    maxTurns: scenario.maxTurns || 20,
-    customerObjective: scenario.customerObjective,
+    isTerminal: terminalStates.includes(scenario?.initialState),
+    maxTurns: scenario?.maxTurns || 20,
+    customerObjective: scenario?.customerObjective || '',
   };
 };
 
@@ -29,6 +30,14 @@ export const getPermittedFacts = ({ scenario, currentState, fixture }) => {
         permitted[key] = fixture.facts[key];
       }
     }
+  }
+
+  // Once beyond INTRODUCE_ISSUE, ensure core booking facts are always disclosed when requested
+  if (currentState !== 'INTRODUCE_ISSUE' && fixture?.facts) {
+    if (fixture.facts.passengerName) permitted.passengerName = fixture.facts.passengerName;
+    if (fixture.facts.pnr) permitted.pnr = fixture.facts.pnr;
+    if (fixture.facts.flightNumber) permitted.flightNumber = fixture.facts.flightNumber;
+    if (fixture.facts.passengerEmail) permitted.passengerEmail = fixture.facts.passengerEmail;
   }
 
   return permitted;
@@ -54,7 +63,23 @@ export const validateAndApplyTransition = ({ scenario, currentScenarioState, eve
     };
   }
 
-  const transition = (stateDef.transitions || []).find((t) => t.event === eventType);
+  let transition = (stateDef.transitions || []).find((t) => t.event === eventType);
+
+  // Graceful fallback for conversational fluidity:
+  // If no exact match, allow common conversational progressions instead of deadlocking
+  if (!transition && Array.isArray(stateDef.transitions) && stateDef.transitions.length > 0) {
+    if (currentScenarioState.currentState === 'INTRODUCE_ISSUE') {
+      // Any agent reply in INTRODUCE_ISSUE moves to providing booking details
+      transition =
+        stateDef.transitions.find((t) => t.targetState === 'PROVIDE_BOOKING_DETAILS') ||
+        stateDef.transitions[0];
+    } else if (currentScenarioState.currentState === 'PROVIDE_BOOKING_DETAILS') {
+      // Any agent acknowledgment after details moves to discussing options
+      transition =
+        stateDef.transitions.find((t) => t.targetState === 'DISCUSS_OPTIONS') ||
+        stateDef.transitions[0];
+    }
+  }
 
   if (!transition) {
     return {

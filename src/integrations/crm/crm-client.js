@@ -6,6 +6,18 @@ export class CrmClient {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
+  async _safeParseJson(response, operationName) {
+    const rawText = await response.text();
+    let resData;
+    try {
+      resData = JSON.parse(rawText);
+    } catch {
+      const preview = rawText.slice(0, 200).replace(/\s+/g, ' ');
+      throw new Error(`CRM API ${operationName} returned non-JSON HTTP ${response.status}: ${preview}`);
+    }
+    return resData;
+  }
+
   async startCustomerSession({
     customerName,
     passengerEmail,
@@ -14,7 +26,7 @@ export class CrmClient {
     category = 'DISRUPTION',
     initialMessage,
   }) {
-    const url = `${this.baseUrl}/api/chat/sessions`;
+    const url = `${this.baseUrl}/api/v1/chat/sessions`;
     const payload = {
       customerName,
       passengerEmail,
@@ -31,7 +43,7 @@ export class CrmClient {
         body: JSON.stringify(payload),
       });
 
-      const resData = await response.json();
+      const resData = await this._safeParseJson(response, 'startCustomerSession');
       if (!response.ok || !resData.success) {
         throw new Error(resData.message || `Failed to create CRM customer session: ${response.status}`);
       }
@@ -44,8 +56,11 @@ export class CrmClient {
   }
 
   async sendCustomerMessage({ chatId, text, token, clientMessageId }) {
-    const url = `${this.baseUrl}/api/chat/sessions/${encodeURIComponent(chatId)}/messages`;
-    const payload = { text, clientMessageId };
+    const url = `${this.baseUrl}/api/v1/chat/sessions/${encodeURIComponent(chatId)}/messages`;
+    const payload = {
+      text,
+      clientMessageId: clientMessageId || `msg-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    };
 
     try {
       const response = await fetch(url, {
@@ -57,7 +72,7 @@ export class CrmClient {
         body: JSON.stringify(payload),
       });
 
-      const resData = await response.json();
+      const resData = await this._safeParseJson(response, 'sendCustomerMessage');
       if (!response.ok || !resData.success) {
         throw new Error(resData.message || `Failed to post CRM message: ${response.status}`);
       }
@@ -70,7 +85,7 @@ export class CrmClient {
   }
 
   async closeCustomerSession({ chatId, token }) {
-    const url = `${this.baseUrl}/api/chat/sessions/${encodeURIComponent(chatId)}/close`;
+    const url = `${this.baseUrl}/api/v1/chat/sessions/${encodeURIComponent(chatId)}/close`;
 
     try {
       const response = await fetch(url, {
@@ -81,7 +96,7 @@ export class CrmClient {
         },
       });
 
-      const resData = await response.json();
+      const resData = await this._safeParseJson(response, 'closeCustomerSession');
       return resData;
     } catch (err) {
       logger.error(`CRM closeCustomerSession failed: ${err.message}`);

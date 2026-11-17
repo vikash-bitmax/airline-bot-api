@@ -21,25 +21,37 @@ export class CrmSocketClient {
       reconnectionDelay: 1000,
     });
 
+    const processedMessages = new Set();
+
     socket.on('connect', () => {
       logger.info(`CRM Socket connected for conversation ${conversationId} (Chat: ${chatId})`);
       socket.emit('chat:join', { chatId }, (ack) => {
-        logger.debug(`Joined CRM chat ${chatId}:`, ack);
+        if (ack && ack.success === false) {
+          logger.error(`CRM chat:join rejected for ${chatId}: ${ack.message || ack.code}`);
+        } else {
+          logger.info(`Joined CRM chat room successfully: ${chatId}`);
+        }
       });
     });
 
-    socket.on('chat:message:new', (msg) => {
-      // Discard customer's own echoes; only process AGENT or SYSTEM messages
-      if (msg.senderRole !== 'PASSENGER') {
-        if (onAgentMessage) onAgentMessage(msg);
-      }
-    });
+    const handleIncomingMessage = (msg) => {
+      if (!msg) return;
+      const msgId = msg.id || msg._id || msg.clientMessageId;
+      if (msgId && processedMessages.has(msgId)) return;
+      if (msgId) processedMessages.add(msgId);
 
-    socket.on('chat:message', (msg) => {
-      if (msg.senderRole !== 'PASSENGER') {
+      // Only AGENT messages should trigger an AI customer reply turn
+      if (msg.senderRole === 'AGENT') {
+        logger.info(`CRM Socket received AGENT turn for ${chatId}: "${msg.text}"`);
         if (onAgentMessage) onAgentMessage(msg);
+      } else if (msg.senderRole === 'SYSTEM') {
+        logger.info(`CRM Socket received SYSTEM notification for ${chatId}: "${msg.text}"`);
+        if (onCrmEvent) onCrmEvent({ eventType: 'SYSTEM_MESSAGE', data: msg });
       }
-    });
+    };
+
+    socket.on('chat:message:new', handleIncomingMessage);
+    socket.on('chat:message', handleIncomingMessage);
 
     socket.on('chat:assigned', (data) => {
       if (onCrmEvent) onCrmEvent({ eventType: 'CHAT_ASSIGNED', data });
@@ -53,7 +65,14 @@ export class CrmSocketClient {
       if (onCrmEvent) onCrmEvent({ eventType: 'CHAT_ESCALATED', data });
     });
 
+    // CRM emits 'chat:status' when resolve/close/escalate happens via HTTP or socket
+    socket.on('chat:status', (data) => {
+      logger.info(`CRM chat:status update for ${chatId}: ${JSON.stringify(data?.status || data)}`);
+      if (onCrmEvent) onCrmEvent({ eventType: 'CHAT_STATUS_CHANGED', data });
+    });
+
     socket.on('chat:status:changed', (data) => {
+      logger.info(`CRM chat:status:changed for ${chatId}: ${JSON.stringify(data?.status || data)}`);
       if (onCrmEvent) onCrmEvent({ eventType: 'CHAT_STATUS_CHANGED', data });
     });
 
@@ -63,6 +82,21 @@ export class CrmSocketClient {
 
     this.activeSockets.set(conversationId, socket);
     return socket;
+  }
+
+  /**
+   * Emit typing indicator on the CRM chat room.
+   * The CRM chatSocket broadcasts 'chat:typing' to all room participants.
+   */
+  emitTyping(conversationId, chatId, isTyping) {
+    const socket = this.activeSockets.get(conversationId);
+    if (socket && socket.connected) {
+      socket.emit('chat:typing', { chatId, isTyping }, (ack) => {
+        if (ack && ack.success === false) {
+          logger.debug(`CRM typing indicator failed for ${chatId}: ${ack.message || ack.code}`);
+        }
+      });
+    }
   }
 
   disconnectConversation(conversationId) {

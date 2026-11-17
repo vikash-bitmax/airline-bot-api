@@ -9,12 +9,19 @@ export const interpretAgentMessage = (text) => {
   const lower = text.toLowerCase();
 
   // Pattern detection for agent requests and explanations
-  if (lower.includes('pnr') || lower.includes('booking reference') || lower.includes('booking code') || lower.includes('ticket number')) {
+  if (
+    lower.includes('pnr') || lower.includes('booking reference') || lower.includes('booking code') ||
+    lower.includes('ticket number') || lower.includes('your details') || lower.includes('your information') ||
+    lower.includes('booking details') || lower.includes('flight details') || lower.includes('passenger details') ||
+    lower.includes('confirmation number') || lower.includes('reservation') ||
+    (lower.includes('details') && (lower.includes('provide') || lower.includes('share') || lower.includes('get') || lower.includes('give') || lower.includes('need') || lower.includes('can i'))) ||
+    (lower.includes('verify') && (lower.includes('identity') || lower.includes('booking') || lower.includes('name')))
+  ) {
     return {
       eventType: 'AGENT_ASKED_FOR_PNR',
-      confidence: 0.95,
+      confidence: 0.92,
       evidenceType: 'AGENT_MESSAGE',
-      description: 'Agent requested PNR or booking reference',
+      description: 'Agent requested passenger/booking details',
     };
   }
 
@@ -72,12 +79,32 @@ export const interpretAgentMessage = (text) => {
     };
   }
 
-  if (lower.includes('apologize') || lower.includes('sorry for the inconvenience') || lower.includes('assist you')) {
+  if (
+    lower.includes('got it') || lower.includes('i got it') || lower.includes('found it') ||
+    lower.includes('found your booking') || lower.includes('located your booking') ||
+    lower.includes('pulling up') || lower.includes('pulled up') || lower.includes('i see your') ||
+    lower.includes('let me check') || lower.includes('checking this') || lower.includes('one moment') ||
+    lower.includes('give me a moment') || lower.includes('looking into this')
+  ) {
+    return {
+      eventType: 'BOOKING_IDENTIFIED',
+      confidence: 0.9,
+      evidenceType: 'AGENT_MESSAGE',
+      description: 'Agent located or acknowledged passenger booking details',
+    };
+  }
+
+  if (
+    lower.includes('apologize') || lower.includes('sorry') || lower.includes('assist you') ||
+    lower.includes('how can i help') || lower.includes('how may i help') ||
+    lower.includes('hello') || lower.includes('hi there') || lower.includes('welcome') ||
+    lower.includes('thanks for reaching') || lower.includes('thank you for contacting')
+  ) {
     return {
       eventType: 'AGENT_ACKNOWLEDGED',
-      confidence: 0.8,
+      confidence: 0.85,
       evidenceType: 'AGENT_MESSAGE',
-      description: 'Agent acknowledged disruption politely',
+      description: 'Agent acknowledged disruption or greeted passenger',
     };
   }
 

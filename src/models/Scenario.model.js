@@ -100,14 +100,39 @@ const scenarioSchema = new mongoose.Schema(
       required: true,
     },
 
+    customerObjective: {
+      type: String,
+      default: '',
+    },
+
+    difficulty: {
+      type: String,
+      default: 'MEDIUM',
+    },
+
+    terminalStates: {
+      type: [String],
+      default: ['COMPLETED', 'CLOSED', 'TERMINAL'],
+    },
+
+    stateMachine: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+
+    requiredFacts: {
+      type: mongoose.Schema.Types.Mixed,
+      default: [],
+    },
+
     factDefinitions: {
       type: [factDefinitionSchema],
       default: [],
     },
 
     states: {
-      type: [stateSchema],
-      required: true,
+      type: mongoose.Schema.Types.Mixed,
+      default: [],
     },
 
     maxTurns: {

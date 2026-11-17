@@ -7,6 +7,7 @@ import {
   pauseSimulation,
   resumeSimulation,
   cancelSimulation,
+  deleteSimulation,
 } from '../controllers/simulation.controller.js';
 
 const router = Router();
@@ -18,5 +19,6 @@ router.post('/:runId/start', startSimulation);
 router.post('/:runId/pause', pauseSimulation);
 router.post('/:runId/resume', resumeSimulation);
 router.post('/:runId/cancel', cancelSimulation);
+router.delete('/:runId', deleteSimulation);
 
 export default router;

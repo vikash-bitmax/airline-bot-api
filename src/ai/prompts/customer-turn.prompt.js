@@ -28,6 +28,13 @@ ${JSON.stringify(permittedFacts, null, 2)}
 [RECENT CHAT TRANSCRIPT]
 ${formattedTranscript || '(No previous messages. This is the opening message.)'}
 
+[INSTRUCTION FOR THIS TURN]
+Directly reply to the latest AGENT message in the transcript above.
+- Do NOT repeat your opening statement or verbatim goal.
+- If the agent asked for your details/PNR/flight/name, disclose them from [ALLOWED FACTS].
+- If the agent acknowledged or said they are checking, respond conversationally with what you would like done next.
+- Keep in character: ${personaContext.tone} tone, ${personaContext.messageLength} length.
+
 Respond with a JSON object conforming to:
 {
   "schemaVersion": "1.0",

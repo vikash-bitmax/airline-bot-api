@@ -57,6 +57,7 @@ export const scenariosData = [
         transitions: [
           { event: 'AGENT_ASKED_FOR_PNR', targetState: 'PROVIDE_BOOKING_DETAILS' },
           { event: 'AGENT_ACKNOWLEDGED', targetState: 'PROVIDE_BOOKING_DETAILS' },
+          { event: 'CLARIFICATION_PROVIDED', targetState: 'PROVIDE_BOOKING_DETAILS' },
         ],
       },
       PROVIDE_BOOKING_DETAILS: {
@@ -140,7 +141,11 @@ export const scenariosData = [
       INTRODUCE_ISSUE: {
         description: 'Customer mentions delayed flight.',
         allowedFacts: ['passengerName', 'flightNumber'],
-        transitions: [{ event: 'AGENT_ASKED_FOR_PNR', targetState: 'PROVIDE_BOOKING_DETAILS' }],
+        transitions: [
+          { event: 'AGENT_ASKED_FOR_PNR', targetState: 'PROVIDE_BOOKING_DETAILS' },
+          { event: 'AGENT_ACKNOWLEDGED', targetState: 'PROVIDE_BOOKING_DETAILS' },
+          { event: 'CLARIFICATION_PROVIDED', targetState: 'PROVIDE_BOOKING_DETAILS' },
+        ],
       },
       PROVIDE_BOOKING_DETAILS: {
         description: 'Customer shares PNR.',

@@ -49,6 +49,7 @@ const conversationSchema = new mongoose.Schema(
     crm: {
       externalConversationId: String,
       externalCustomerId: String,
+      customerSessionToken: String,
       channel: String,
       integrationStatus: {
         type: String,
@@ -60,16 +61,21 @@ const conversationSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: [
-        "PENDING",
+        "NEW",
+        "WAITING",
+        "ACTIVE",
         "RUNNING",
-        "WAITING_FOR_AGENT",
-        "WAITING_FOR_CUSTOMER",
+        "ESCALATED",
+        "TRANSFERRED",
+        "RESOLVED",
+        "CLOSED",
         "COMPLETED",
+        "CONCLUDED",
         "ABANDONED",
         "FAILED",
         "CANCELLED",
       ],
-      default: "PENDING",
+      default: "ACTIVE",
       index: true,
     },
 
