@@ -7,7 +7,7 @@ export class MockCrmClient extends EventEmitter {
     this.sessions = new Map();
   }
 
-  async startCustomerSession({ customerName, passengerEmail, pnr, flightNumber, initialMessage }) {
+  async startCustomerSession({ customerName, passengerEmail, pnr, flightNumber, category, initialMessage }) {
     const chatId = `CHAT-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
     const token = `mock-token-${Math.random().toString(36).substring(2, 15)}`;
 
@@ -18,6 +18,7 @@ export class MockCrmClient extends EventEmitter {
       passengerEmail,
       pnr,
       flightNumber,
+      category,
       status: 'WAITING',
       assigned: false,
       messages: [],

@@ -1,10 +1,10 @@
 import http from 'http';
 import { Server } from 'socket.io';
-import app from './app.js';
-import { env, validateEnvironment } from './config/environment.js';
-import { connectDB, disconnectDB } from './config/database.js';
-import { closeRedis } from './config/redis.js';
-import logger from './utils/logger.js';
+import app from './src/app.js';
+import { env, validateEnvironment } from './src/config/environment.js';
+import { connectDB, disconnectDB } from './src/config/database.js';
+import { closeRedis } from './src/config/redis.js';
+import logger from './src/utils/logger.js';
 
 let io = null;
 

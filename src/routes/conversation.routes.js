@@ -6,11 +6,14 @@ import {
   getConversationEventsList,
   replayConversationEndpoint,
   stopConversation,
+  raiseConversationQuery,
 } from '../controllers/conversation.controller.js';
 
 const router = Router();
 
 router.get('/', getConversations);
+router.post('/raise-query', raiseConversationQuery);
+router.post('/support', raiseConversationQuery);
 router.get('/:conversationId', getConversationDetails);
 router.get('/:conversationId/messages', getConversationMessagesList);
 router.get('/:conversationId/events', getConversationEventsList);

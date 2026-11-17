@@ -38,6 +38,7 @@ export class ConversationOrchestrator {
     scenarioId,
     randomSeed,
     useMockCrm = false,
+    customFixture,
   }) {
     logger.info(`Starting conversation: run=${runId}, persona=${personaId}, scenario=${scenarioId}`);
 
@@ -59,6 +60,13 @@ export class ConversationOrchestrator {
       conversationId,
       scenarioRequirements: scenario.requiredFacts,
     });
+
+    if (customFixture) {
+      if (customFixture.passengerName) customerFixture.facts.passengerName = customFixture.passengerName;
+      if (customFixture.passengerEmail) customerFixture.facts.passengerEmail = customFixture.passengerEmail;
+      if (customFixture.pnr) customerFixture.facts.pnr = customFixture.pnr;
+      if (customFixture.flightNumber) customerFixture.facts.flightNumber = customFixture.flightNumber;
+    }
 
     // 2. Initialise states
     const dynamicPersonaState = initializePersonaState(persona);
@@ -93,17 +101,28 @@ export class ConversationOrchestrator {
       fixture: customerFixture,
     });
 
-    const llmResult = await this.llmProvider.generateCustomerTurn({
-      personaContext,
-      scenarioContext: {
-        currentState: scenarioState.currentState,
-        customerObjective: scenario.customerObjective,
-      },
-      permittedFacts,
-      transcript: [],
-    });
+    let openingText;
+    let messageIntent = 'STATE_PROBLEM';
+    let emotionExp = persona.emotionalBaseline?.temperament || 'NEUTRAL';
+    let aiMeta = null;
 
-    const openingText = llmResult.output.messageParts.map((p) => p.text).join(' ');
+    if (customFixture?.initialMessage) {
+      openingText = customFixture.initialMessage;
+    } else {
+      const llmResult = await this.llmProvider.generateCustomerTurn({
+        personaContext,
+        scenarioContext: {
+          currentState: scenarioState.currentState,
+          customerObjective: scenario.customerObjective,
+        },
+        permittedFacts,
+        transcript: [],
+      });
+      openingText = llmResult.output.messageParts.map((p) => p.text).join(' ');
+      messageIntent = llmResult.output.intent;
+      emotionExp = llmResult.output.emotionExpression;
+      aiMeta = llmResult.metadata;
+    }
 
     // 5. Persist opening message
     await createMessage({
@@ -111,20 +130,23 @@ export class ConversationOrchestrator {
       senderType: 'CUSTOMER',
       senderId: customerFixture.facts.passengerName,
       content: openingText,
-      intent: llmResult.output.intent,
-      emotionExpression: llmResult.output.emotionExpression,
-      aiMetadata: llmResult.metadata,
+      intent: messageIntent,
+      emotionExpression: emotionExp,
+      aiMetadata: aiMeta,
     });
 
     // 6. Connect to CRM (Real or Mock)
     try {
       let crmSession = null;
+      const category = customFixture?.category || scenario.category || 'FLIGHT_DISRUPTION';
+
       if (useMockCrm || simulationRun.environment === 'TEST') {
         crmSession = await mockCrmClient.startCustomerSession({
           customerName: customerFixture.facts.passengerName,
           passengerEmail: customerFixture.facts.passengerEmail,
           pnr: customerFixture.facts.pnr,
           flightNumber: customerFixture.facts.flightNumber,
+          category,
           initialMessage: openingText,
         });
 
@@ -146,6 +168,7 @@ export class ConversationOrchestrator {
           passengerEmail: customerFixture.facts.passengerEmail,
           pnr: customerFixture.facts.pnr,
           flightNumber: customerFixture.facts.flightNumber,
+          category,
           initialMessage: openingText,
         });
 
