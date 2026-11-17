@@ -1,0 +1,20 @@
+import { Router } from 'express';
+import {
+  getConversations,
+  getConversationDetails,
+  getConversationMessagesList,
+  getConversationEventsList,
+  replayConversationEndpoint,
+  stopConversation,
+} from '../controllers/conversation.controller.js';
+
+const router = Router();
+
+router.get('/', getConversations);
+router.get('/:conversationId', getConversationDetails);
+router.get('/:conversationId/messages', getConversationMessagesList);
+router.get('/:conversationId/events', getConversationEventsList);
+router.get('/:conversationId/replay', replayConversationEndpoint);
+router.post('/:conversationId/stop', stopConversation);
+
+export default router;
