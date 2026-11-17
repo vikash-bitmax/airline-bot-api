@@ -21,6 +21,11 @@ export const createSimulation = async (req, res, next) => {
 
     const runId = `RUN-${uuidv4().substring(0, 8).toUpperCase()}`;
 
+    const randomSeedVal =
+      (randomSeed && String(randomSeed).trim()) ||
+      (req.body?.configuration?.randomSeed && String(req.body.configuration.randomSeed).trim()) ||
+      uuidv4();
+
     const simulation = await SimulationRun.create({
       runId,
       name: name || `Simulation ${runId}`,
@@ -32,10 +37,10 @@ export const createSimulation = async (req, res, next) => {
         strategy,
       },
       configuration: {
-        totalCustomers,
-        concurrency,
-        maxTurnsPerConversation,
-        randomSeed: randomSeed || uuidv4(),
+        totalCustomers: totalCustomers || req.body?.configuration?.totalCustomers || 1,
+        concurrency: concurrency || req.body?.configuration?.concurrency || 1,
+        maxTurnsPerConversation: maxTurnsPerConversation || req.body?.configuration?.maxTurnsPerConversation || 20,
+        randomSeed: randomSeedVal,
       },
     });
 

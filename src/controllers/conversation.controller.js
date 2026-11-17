@@ -164,7 +164,12 @@ export const raiseConversationQuery = async (req, res, next) => {
         environment: useMockCrm ? 'TEST' : 'LOCAL',
         status: 'RUNNING',
         selection: { personaIds: [personaId], scenarioIds: [scenarioId], strategy: 'MANUAL' },
-        configuration: { totalCustomers: 1, concurrency: 1, maxTurnsPerConversation: 20 },
+        configuration: {
+          totalCustomers: 1,
+          concurrency: 1,
+          maxTurnsPerConversation: 20,
+          randomSeed: uuidv4(),
+        },
       });
     }
 

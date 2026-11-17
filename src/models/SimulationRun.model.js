@@ -1,5 +1,6 @@
 
 import mongoose from "mongoose";
+import { v4 as uuidv4 } from "uuid";
 
 const simulationRunSchema = new mongoose.Schema(
   {
@@ -45,7 +46,7 @@ const simulationRunSchema = new mongoose.Schema(
       totalCustomers: { type: Number, min: 1, default: 1 },
       concurrency: { type: Number, min: 1, default: 1 },
       maxTurnsPerConversation: { type: Number, min: 1, default: 20 },
-      randomSeed: { type: String, required: true },
+      randomSeed: { type: String, required: true, default: () => uuidv4() },
       aiProvider: String,
       aiModel: String,
     },
