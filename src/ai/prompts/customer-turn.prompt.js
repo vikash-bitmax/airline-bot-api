@@ -30,9 +30,12 @@ ${formattedTranscript || '(No previous messages. This is the opening message.)'}
 
 [INSTRUCTION FOR THIS TURN]
 Directly reply to the latest AGENT message in the transcript above.
-- Do NOT repeat your opening statement or verbatim goal.
-- If the agent asked for your details/PNR/flight/name, disclose them from [ALLOWED FACTS].
-- If the agent acknowledged or said they are checking, respond conversationally with what you would like done next.
+- NEVER repeat previous messages or greetings from the transcript.
+- PRIVACY CHECK: Did the agent explicitly ask for your booking reference, PNR, flight number, or details?
+  - ONLY IF YES: Provide your PNR (${permittedFacts?.pnr || 'available'}) and details from [ALLOWED FACTS].
+  - IF NO: DO NOT volunteer your PNR or ticket code yet! Answer their greeting or comment naturally like a real human.
+- If the agent says they are checking or asks you to wait, acknowledge patiently.
+- If the agent offers options (rebooking vs refund), state your preference clearly based on your Goal.
 - Keep in character: ${personaContext.tone} tone, ${personaContext.messageLength} length.
 
 Respond with a JSON object conforming to:

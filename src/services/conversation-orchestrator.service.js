@@ -339,7 +339,28 @@ export class ConversationOrchestrator {
       transcript: messages.messages,
     });
 
-    const customerReplyText = llmResult.output.messageParts.map((p) => p.text).join(' ');
+    let customerReplyText = llmResult.output.messageParts.map((p) => p.text).join(' ');
+
+    // Anti-repetition check: ensure the bot never sends an identical message to previous turns
+    const previousCustomerTexts = (messages.messages || [])
+      .filter((m) => m.senderType === 'CUSTOMER')
+      .map((m) => (m.content || '').trim().toLowerCase());
+
+    const lastCustomerText = previousCustomerTexts[previousCustomerTexts.length - 1];
+
+    if (lastCustomerText && customerReplyText.trim().toLowerCase() === lastCustomerText) {
+      logger.warn(`Duplicate reply detected for ${conv.conversationId}. Applying dynamic rephrasing.`);
+      const lowerAgent = (agentMessage || '').toLowerCase();
+      if (lowerAgent.includes('wait') || lowerAgent.includes('moment') || lowerAgent.includes('check')) {
+        customerReplyText = 'Sure, take your time. I will be waiting here.';
+      } else if (lowerAgent.includes('pnr') || lowerAgent.includes('booking') || lowerAgent.includes('details')) {
+        customerReplyText = `My booking reference is ${conv.customerFixture?.facts?.pnr || 'on file'} for flight ${conv.customerFixture?.facts?.flightNumber || 'SW-101'}.`;
+      } else if (lowerAgent.includes('refund') || lowerAgent.includes('rebook')) {
+        customerReplyText = 'Could you please confirm the options available for this ticket?';
+      } else {
+        customerReplyText = 'Understood. Please let me know what the next steps are.';
+      }
+    }
 
     // ── PHASE 3: "Typing" with Live Indicator ──
     // Recalculate typing duration with actual reply length

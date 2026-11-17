@@ -69,10 +69,10 @@ export const validateAndApplyTransition = ({ scenario, currentScenarioState, eve
   // If no exact match, allow common conversational progressions instead of deadlocking
   if (!transition && Array.isArray(stateDef.transitions) && stateDef.transitions.length > 0) {
     if (currentScenarioState.currentState === 'INTRODUCE_ISSUE') {
-      // Any agent reply in INTRODUCE_ISSUE moves to providing booking details
-      transition =
-        stateDef.transitions.find((t) => t.targetState === 'PROVIDE_BOOKING_DETAILS') ||
-        stateDef.transitions[0];
+      // Only advance to PROVIDE_BOOKING_DETAILS if the agent requested details or PNR
+      if (eventType === 'AGENT_ASKED_FOR_PNR') {
+        transition = stateDef.transitions.find((t) => t.targetState === 'PROVIDE_BOOKING_DETAILS');
+      }
     } else if (currentScenarioState.currentState === 'PROVIDE_BOOKING_DETAILS') {
       // Any agent acknowledgment after details moves to discussing options
       transition =

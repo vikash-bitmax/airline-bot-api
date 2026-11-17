@@ -30,7 +30,7 @@ export class GeminiProvider extends LlmProviderInterface {
           { role: 'user', parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] },
         ],
         generationConfig: {
-          temperature: 0.3,
+          temperature: 0.7,
           responseMimeType: 'application/json',
         },
       };
@@ -85,101 +85,141 @@ export class GeminiProvider extends LlmProviderInterface {
     const { personaContext, scenarioContext, permittedFacts, transcript = [] } = context;
     let messageText = '';
 
-    // Count how many CUSTOMER messages already exist to vary responses
-    const customerTurns = transcript.filter((m) => m.senderType === 'CUSTOMER').length;
-    const agentTurns = transcript.filter((m) => m.senderType === 'AGENT').length;
+    // Collect past customer message contents to strictly prevent repeating the same reply
+    const pastCustomerTexts = transcript
+      .filter((m) => m.senderType === 'CUSTOMER')
+      .map((m) => (m.content || '').trim().toLowerCase());
+
+    const customerTurns = pastCustomerTexts.length;
     const lastAgentMsg = [...transcript].reverse().find((m) => m.senderType === 'AGENT');
     const lastAgentText = (lastAgentMsg?.content || '').toLowerCase();
 
-    // ── State-aware contextual templates with variation ──
+    // Helper: pick a template that has not been used yet in this conversation
+    const pickUnused = (candidates) => {
+      const unused = candidates.filter((c) => !pastCustomerTexts.includes(c.trim().toLowerCase()));
+      const pool = unused.length > 0 ? unused : candidates;
+      return pool[Math.floor(Math.random() * pool.length)];
+    };
+
+    // Detect if agent explicitly asked for booking reference, PNR, or passenger details
+    const agentAskedForDetails =
+      lastAgentText.includes('pnr') ||
+      lastAgentText.includes('booking reference') ||
+      lastAgentText.includes('booking code') ||
+      lastAgentText.includes('ticket number') ||
+      lastAgentText.includes('your details') ||
+      lastAgentText.includes('booking details') ||
+      lastAgentText.includes('share your booking') ||
+      lastAgentText.includes('provide your booking') ||
+      (lastAgentText.includes('details') && (lastAgentText.includes('give') || lastAgentText.includes('get') || lastAgentText.includes('share') || lastAgentText.includes('provide')));
+
+    // ── State-aware contextual templates with strict anti-repetition ──
     if (scenarioContext.currentState === 'INTRODUCE_ISSUE') {
-      // First contact — only use this on the very first turn
       if (customerTurns === 0) {
+        // First contact
         const templates = [
           `Hello, my flight ${permittedFacts.flightNumber || ''} on route ${permittedFacts.route || ''} has been cancelled. Can you please help me with rebooking or a refund?`,
-          `Hi there, I just found out that my flight ${permittedFacts.flightNumber || ''} has been disrupted. I really need assistance with this.`,
+          `Hi there, I just found out that my flight ${permittedFacts.flightNumber || ''} has been disrupted. I need assistance with this.`,
           `Good day, I'm ${permittedFacts.passengerName || 'a passenger'} and my upcoming flight ${permittedFacts.flightNumber || ''} seems to have been cancelled. Could you look into this for me?`,
-          `Hi, I received a notification that flight ${permittedFacts.flightNumber || ''} has been cancelled. I need help finding an alternative or getting a refund please.`,
         ];
-        if (personaContext.tone === 'aggressive' || personaContext.emotionalState === 'angry') {
-          messageText = `This is unacceptable! My flight ${permittedFacts.flightNumber || ''} was cancelled without proper notice. I need this sorted out immediately!`;
-        } else if (personaContext.tone === 'anxious') {
-          messageText = `Um, hi... I'm really worried because my flight ${permittedFacts.flightNumber || ''} seems to be cancelled? I'm not sure what to do. Can you please help me?`;
-        } else {
-          messageText = templates[Math.floor(Math.random() * templates.length)];
-        }
+        messageText = pickUnused(templates);
       } else {
         // Follow-up while still in INTRODUCE_ISSUE
-        if (
-          lastAgentText.includes('detail') || lastAgentText.includes('pnr') ||
-          lastAgentText.includes('booking') || lastAgentText.includes('name') ||
-          lastAgentText.includes('info') || lastAgentText.includes('can i get')
-        ) {
-          messageText = `Sure, my name is ${permittedFacts.passengerName || 'Vikash Sharma'}. Booking reference is ${permittedFacts.pnr || 'SW9941'}, flight ${permittedFacts.flightNumber || 'SW-101'}.`;
+        if (agentAskedForDetails) {
+          messageText = `Sure, my booking reference is ${permittedFacts.pnr || 'SW9941'} under ${permittedFacts.passengerName || 'Vikash Sharma'}, flight ${permittedFacts.flightNumber || 'SW-101'}.`;
+        } else if (lastAgentText.includes('hello') || lastAgentText.includes('hi') || lastAgentText.includes('help') || lastAgentText.includes('assist')) {
+          const greetings = [
+            'Thanks for replying. Yes, I need assistance sorting out my cancelled flight.',
+            'Thank you. Could you please check what alternative options or refunds are available?',
+            'Appreciate your response. My flight was cancelled today and I need to find another way to reach my destination.',
+          ];
+          messageText = pickUnused(greetings);
         } else {
           const followUps = [
-            `Yes, my flight is ${permittedFacts.flightNumber || 'SW-101'}. Could you please check what options I have?`,
             'I really need to get this resolved as soon as possible. What alternatives do you have?',
-            `Could you please look into my flight on route ${permittedFacts.route || 'this journey'}?`,
+            `Could you please check what options are available for flight ${permittedFacts.flightNumber || ''}?`,
+            'Please let me know how you can assist with this disruption.',
           ];
-          messageText = followUps[Math.floor(Math.random() * followUps.length)];
+          messageText = pickUnused(followUps);
         }
       }
 
     } else if (scenarioContext.currentState === 'PROVIDE_BOOKING_DETAILS') {
-      // Agent asked for details — provide them naturally
-      if (lastAgentText.includes('pnr') || lastAgentText.includes('booking') || lastAgentText.includes('reference') || lastAgentText.includes('details')) {
+      // ONLY provide booking details if the agent actually requested them!
+      if (agentAskedForDetails) {
         if (permittedFacts.pnr) {
           const templates = [
-            `Sure, my PNR is ${permittedFacts.pnr}. The booking is under ${permittedFacts.passengerName || 'my name'}.`,
-            `Of course. My booking reference is ${permittedFacts.pnr}, name ${permittedFacts.passengerName || ''}, flight ${permittedFacts.flightNumber || ''}.`,
-            `Here you go — PNR: ${permittedFacts.pnr}. It's for flight ${permittedFacts.flightNumber || ''} on ${permittedFacts.travelDate || 'the upcoming date'}.`,
-            `My booking reference number is ${permittedFacts.pnr}. The passenger name is ${permittedFacts.passengerName || 'registered on the ticket'}.`,
+            `Sure, my booking reference is ${permittedFacts.pnr} under ${permittedFacts.passengerName || 'my name'}.`,
+            `Of course. My PNR is ${permittedFacts.pnr}, flight ${permittedFacts.flightNumber || 'SW-101'}.`,
+            `Here you go — PNR: ${permittedFacts.pnr}. The ticket is registered under ${permittedFacts.passengerName || 'my name'}.`,
           ];
-          messageText = templates[Math.floor(Math.random() * templates.length)];
+          messageText = pickUnused(templates);
         } else {
-          messageText = `I'm sorry, I don't have my booking reference handy at the moment. Is there another way you can look it up?`;
+          messageText = `I don't have my booking reference right here, but my name is ${permittedFacts.passengerName || 'on the ticket'}. Can you look it up by name?`;
         }
+      } else if (lastAgentText.includes('hello') || lastAgentText.includes('hi') || lastAgentText.includes('help') || lastAgentText.includes('assist')) {
+        // Agent just greeted or asked general "how can I help" — DO NOT volunteer PNR yet!
+        const politeReplies = [
+          'Hello! As mentioned, my flight was cancelled and I am looking for assistance with rebooking or a refund.',
+          'Hi there. I was informed my flight has been cancelled. What options do I have?',
+          'Thanks for connecting with me. Could you please check what options are available for my cancelled flight?',
+        ];
+        messageText = pickUnused(politeReplies);
+      } else if (lastAgentText.includes('wait') || lastAgentText.includes('moment') || lastAgentText.includes('check') || lastAgentText.includes('looking')) {
+        // Agent is checking system
+        const waitReplies = [
+          'Sure, take your time.',
+          'Understood, thank you. I will wait.',
+          'Okay, please let me know what you find.',
+        ];
+        messageText = pickUnused(waitReplies);
       } else {
-        // Generic detail-providing response
-        messageText = `Let me give you my details. My name is ${permittedFacts.passengerName || 'on the booking'}, flight ${permittedFacts.flightNumber || ''}, PNR ${permittedFacts.pnr || 'I will check'}.`;
+        // Generic follow-up without volunteering PNR
+        messageText = 'Please let me know what information you need from me to proceed.';
       }
 
     } else if (scenarioContext.currentState === 'DISCUSS_OPTIONS') {
-      const templates = [
-        'What options do I have? I would prefer to be rebooked on the next available flight if possible.',
-        'Could you tell me what alternatives are available? I need to reach my destination as soon as possible.',
-        'I would like to know my options. Is there a direct flight available, or would I need a connecting flight?',
-        'What are my choices here? I am flexible with timing but would prefer to fly today if possible.',
-      ];
-      messageText = templates[Math.floor(Math.random() * templates.length)];
-
-    } else if (scenarioContext.currentState === 'WAIT_FOR_CUSTOMER') {
-      // Customer confirming their choice
-      if (lastAgentText.includes('refund')) {
-        messageText = 'Yes, I would like to go ahead with the full refund back to my original payment method, please.';
-      } else if (lastAgentText.includes('rebook') || lastAgentText.includes('alternative')) {
-        messageText = 'That sounds good. Please go ahead and rebook me on that alternative flight. Thank you.';
+      if (lastAgentText.includes('wait') || lastAgentText.includes('moment') || lastAgentText.includes('check')) {
+        messageText = 'Sure, I will wait while you check that.';
+      } else if (lastAgentText.includes('refund') && lastAgentText.includes('rebook')) {
+        messageText = 'Could you tell me the timings for the rebooked flight? If it is too late, I would prefer a full refund.';
+      } else if (lastAgentText.includes('rebook') || lastAgentText.includes('alternative') || lastAgentText.includes('flight')) {
+        messageText = 'What time does that alternative flight depart? Does it have any layovers?';
+      } else if (lastAgentText.includes('refund')) {
+        messageText = 'How long does the refund take to process back to my card?';
       } else {
         const templates = [
-          'Yes, that works for me. Please go ahead and process that.',
-          'Okay, I agree with that option. Can you confirm once it is done?',
-          'That sounds reasonable. Please proceed and let me know when it is confirmed.',
+          'What options do I have? I would prefer to be rebooked on the next available flight if possible.',
+          'Could you tell me what alternatives are available? I need to reach my destination today.',
+          'What are my choices here? I am flexible with timing but would prefer a direct flight.',
         ];
-        messageText = templates[Math.floor(Math.random() * templates.length)];
+        messageText = pickUnused(templates);
+      }
+
+    } else if (scenarioContext.currentState === 'WAIT_FOR_CUSTOMER') {
+      if (lastAgentText.includes('refund')) {
+        messageText = 'Yes, I would like to proceed with the full refund back to my original payment method, please.';
+      } else if (lastAgentText.includes('rebook') || lastAgentText.includes('alternative') || lastAgentText.includes('next flight')) {
+        messageText = 'That alternative flight works for me. Please go ahead and confirm my seat on it.';
+      } else {
+        const confirmations = [
+          'Yes, that works for me. Please go ahead and process that.',
+          'Okay, I agree with that solution. Can you confirm once it is completed?',
+          'That sounds good. Please proceed and let me know when confirmed.',
+        ];
+        messageText = pickUnused(confirmations);
       }
 
     } else if (scenarioContext.currentState === 'COMPLETED') {
-      messageText = 'Thank you very much for your help. I appreciate the quick resolution. Have a good day!';
+      messageText = 'Thank you very much for your help! Have a great day.';
 
     } else {
-      // Generic conversational filler based on agent's last message
-      if (lastAgentText.includes('anything else') || lastAgentText.includes('help you with')) {
-        messageText = 'No, that should be everything. Thank you for your assistance!';
+      if (lastAgentText.includes('anything else') || lastAgentText.includes('further assistance')) {
+        messageText = 'No, that should be everything. Thank you!';
       } else if (lastAgentText.includes('sorry') || lastAgentText.includes('apologize')) {
-        messageText = 'I understand, these things happen. I just need to make sure I can still reach my destination.';
+        messageText = 'I understand, disruptions happen. I just need to make sure this gets resolved.';
       } else {
-        messageText = 'Okay, understood. Please let me know what the next steps are.';
+        messageText = 'Understood. Please let me know what the next steps are.';
       }
     }
 

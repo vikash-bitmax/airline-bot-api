@@ -142,6 +142,28 @@ export const stopConversation = async (req, res, next) => {
   }
 };
 
+export const stopAllConversations = async (req, res, next) => {
+  try {
+    const activeConvs = await Conversation.find({
+      status: { $in: ['ACTIVE', 'RUNNING', 'WAITING', 'NEW', 'WAITING_FOR_AGENT', 'WAITING_FOR_CUSTOMER'] },
+    });
+
+    await Promise.all(
+      activeConvs.map((conv) =>
+        conversationOrchestrator.concludeConversation(conv._id, 'STOPPED_ALL_BY_USER')
+      )
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Halted ${activeConvs.length} active conversation(s)`,
+      count: activeConvs.length,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 export const deleteConversation = async (req, res, next) => {
   try {
     const { conversationId } = req.params;
