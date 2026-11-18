@@ -121,8 +121,8 @@ const conversationSchema = new mongoose.Schema(
     timingConfig: {
       type: mongoose.Schema.Types.Mixed,
       default: {
-        minWaitSec: 120,
-        maxWaitSec: 150,
+        minWaitSec: 3,
+        maxWaitSec: 6,
         maxAhtMins: 4,
         idleStopMins: 4,
         pilotMode: 'MANUAL',

@@ -5,6 +5,7 @@ import { env, validateEnvironment } from './src/config/environment.js';
 import { connectDB, disconnectDB } from './src/config/database.js';
 import { closeRedis } from './src/config/redis.js';
 import logger from './src/utils/logger.js';
+import conversationOrchestrator from './src/services/conversation-orchestrator.service.js';
 
 let io = null;
 
@@ -64,6 +65,7 @@ const startServer = async () => {
     server.listen(env.PORT, () => {
       logger.info(`Airline AI Simulator running on port ${env.PORT} in ${env.NODE_ENV} mode`);
       logger.info(`Health check available at http://localhost:${env.PORT}/health`);
+      conversationOrchestrator.reconnectActiveConversations();
     });
 
     // Graceful Shutdown
