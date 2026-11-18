@@ -19,6 +19,7 @@ router.post('/:runId/start', startSimulation);
 router.post('/:runId/pause', pauseSimulation);
 router.post('/:runId/resume', resumeSimulation);
 router.post('/:runId/cancel', cancelSimulation);
+router.post('/:runId/stop', cancelSimulation);
 router.delete('/:runId', deleteSimulation);
 
 export default router;

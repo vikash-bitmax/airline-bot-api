@@ -118,6 +118,16 @@ const conversationSchema = new mongoose.Schema(
     startedAt: Date,
     endedAt: Date,
     endReason: String,
+    timingConfig: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {
+        minWaitSec: 120,
+        maxWaitSec: 150,
+        maxAhtMins: 4,
+        idleStopMins: 4,
+        pilotMode: 'MANUAL',
+      },
+    },
   },
   { timestamps: true }
 );

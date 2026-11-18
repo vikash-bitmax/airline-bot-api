@@ -31,6 +31,48 @@ import { broadcastEvent } from '../../server.js';
 export class ConversationOrchestrator {
   constructor() {
     this.llmProvider = new GeminiProvider();
+    this.startIdleAhtSweeper();
+  }
+
+  /**
+   * Periodic background sweeper enforcing the 4-minute AHT silence/duration ceiling.
+   * If a conversation reaches 4 minutes of handling time, customer ceases replying and conversation concludes as ABANDONED.
+   */
+  startIdleAhtSweeper() {
+    if (this._sweeperInterval) return;
+    this._sweeperInterval = setInterval(async () => {
+      try {
+        const ACTIVE_STATUSES = ['ACTIVE', 'RUNNING', 'WAITING', 'NEW', 'WAITING_FOR_AGENT', 'WAITING_FOR_CUSTOMER'];
+        const cutoff = new Date(Date.now() - 4 * 60 * 1000); // 4 minutes ago
+
+        const expired = await Conversation.find({
+          status: { $in: ACTIVE_STATUSES },
+          startedAt: { $lte: cutoff },
+        });
+
+        for (const conv of expired) {
+          logger.warn(`[AHT Sweeper] Conversation ${conv.conversationId} exceeded 4 minutes duration. Ceasing replies and marking ABANDONED.`);
+          conv.status = 'ABANDONED';
+          conv.endedAt = new Date();
+          conv.endReason = 'AHT_TIMEOUT_4MIN: 4 min AHT ceiling reached - customer stopped replying';
+          await conv.save();
+
+          crmSocketClient.disconnectConversation(conv.conversationId);
+
+          broadcastEvent('conversation:updated', {
+            conversationId: conv.conversationId,
+            status: 'ABANDONED',
+            endReason: conv.endReason,
+          });
+          broadcastEvent('conversation:completed', {
+            conversationId: conv.conversationId,
+            outcome: { goalAchieved: false, reason: conv.endReason },
+          });
+        }
+      } catch (err) {
+        logger.error(`[AHT Sweeper Error]: ${err.message}`);
+      }
+    }, 20000); // run every 20s
   }
 
   async startConversation({
@@ -40,6 +82,7 @@ export class ConversationOrchestrator {
     randomSeed,
     useMockCrm = false,
     customFixture,
+    timingConfig,
   }) {
     logger.info(`Starting conversation: run=${runId}, persona=${personaId}, scenario=${scenarioId}`);
 
@@ -89,6 +132,13 @@ export class ConversationOrchestrator {
         turnCount: 0,
       },
       dynamicPersonaState,
+      timingConfig: timingConfig || {
+        minWaitSec: 120,
+        maxWaitSec: 150,
+        maxAhtMins: 4,
+        idleStopMins: 4,
+        pilotMode: 'MANUAL',
+      },
       startedAt: new Date(),
     });
 
@@ -238,6 +288,49 @@ export class ConversationOrchestrator {
       content: agentMessage,
     });
 
+    // ── CRITICAL REQUIREMENT: AHT 4-minute ceiling / silence limit ──
+    // "after aht 4 min between the conversation bot should not reply"
+    const convDurationMs = Date.now() - new Date(conv.startedAt).getTime();
+    const maxAhtMins = conv.timingConfig?.maxAhtMins ?? 4;
+    const MAX_AHT_MS = maxAhtMins * 60 * 1000;
+
+    const existingMessages = await getConversationMessages(conv._id);
+    const priorMsgs = existingMessages.messages || [];
+    // Prior message before this agent message was saved
+    const lastPriorMsg = priorMsgs.length > 1 ? priorMsgs[priorMsgs.length - 2] : priorMsgs[0];
+    const turnGapMs = lastPriorMsg?.sentAt ? (Date.now() - new Date(lastPriorMsg.sentAt).getTime()) : 0;
+
+    if (convDurationMs >= MAX_AHT_MS || turnGapMs >= MAX_AHT_MS) {
+      logger.warn(
+        `[AHT 4-Min Rule] Conversation ${conv.conversationId} reached threshold ` +
+        `(elapsed: ${Math.round(convDurationMs / 1000)}s, gap: ${Math.round(turnGapMs / 1000)}s, limit: ${maxAhtMins}m). ` +
+        `Bot will not reply. Concluding as ABANDONED.`
+      );
+
+      conv.status = 'ABANDONED';
+      conv.endedAt = new Date();
+      conv.endReason = `AHT_TIMEOUT_4MIN: Handling time exceeded ${maxAhtMins} minutes. Customer ceased replying.`;
+      await conv.save();
+
+      crmSocketClient.disconnectConversation(conv.conversationId);
+
+      broadcastEvent('conversation:updated', {
+        conversationId: conv.conversationId,
+        status: 'ABANDONED',
+        endReason: conv.endReason,
+      });
+
+      broadcastEvent('conversation:completed', {
+        conversationId: conv.conversationId,
+        outcome: {
+          goalAchieved: false,
+          reason: conv.endReason,
+        },
+      });
+
+      return; // Customer ceases replying!
+    }
+
     // 2. Interpret semantic event
     const interpreted = interpretAgentMessage(agentMessage);
     let eventType = interpreted?.eventType || 'AGENT_ACKNOWLEDGED';
@@ -296,11 +389,13 @@ export class ConversationOrchestrator {
       return;
     }
 
-    // ── PHASE 1: "Reading" Delay ──
-    // Simulate the customer reading the agent's message before reacting
+    // ── PHASE 1 & 2: AHT Timing & Reading / Thinking Delays ──
     const chatId = conv.crm?.externalConversationId || crmChatId;
     const persona = conv.persona || conv.personaSnapshot || {};
     const turnNumber = conv.scenarioProgress.turnCount;
+
+    // Check if this is the first agent reply (right after agent accepts chat)
+    const isFirstAgentReply = priorMsgs.filter((m) => m.senderType === 'AGENT').length <= 1;
 
     // Pre-calculate reading + thinking delay (we don't know reply length yet)
     const preTimings = calculateHumanTimings({
@@ -310,12 +405,54 @@ export class ConversationOrchestrator {
       turnNumber,
     });
 
-    logger.info(`Simulating reading delay: ${preTimings.readingDelayMs}ms for ${conv.conversationId}`);
-    await sleep(preTimings.readingDelayMs);
+    let totalWaitMs = preTimings.readingDelayMs + preTimings.thinkingDelayMs;
 
-    // ── PHASE 2: "Thinking" Delay ──
-    logger.info(`Simulating thinking pause: ${preTimings.thinkingDelayMs}ms for ${conv.conversationId}`);
-    await sleep(preTimings.thinkingDelayMs);
+    // "when aht timing is 2 -2:30 min then after accepting bot should reply"
+    if (isFirstAgentReply) {
+      const minSec = conv.timingConfig?.minWaitSec ?? 120;
+      const maxSec = conv.timingConfig?.maxWaitSec ?? 150;
+      const postAcceptDelayMs = Math.round((minSec + Math.random() * Math.max(0, maxSec - minSec)) * 1000);
+      logger.info(
+        `[AHT Post-Accept] First turn after agent accept: applying post-acceptance delay of ` +
+        `${Math.round(postAcceptDelayMs / 1000)}s (${minSec}-${maxSec}s window) for ${conv.conversationId}`
+      );
+      totalWaitMs = Math.max(totalWaitMs, postAcceptDelayMs);
+    }
+
+    // Safely wait in short increments while monitoring for cancellation or 4-min ceiling
+    const sleepIntervalMs = 2000;
+    let waitedMs = 0;
+    while (waitedMs < totalWaitMs) {
+      const step = Math.min(sleepIntervalMs, totalWaitMs - waitedMs);
+      await sleep(step);
+      waitedMs += step;
+
+      // Check if conversation was aborted or stopped while waiting
+      const current = await Conversation.findById(conv._id).select('status startedAt');
+      if (!current || !ACTIVE_STATUSES.includes(current.status)) {
+        logger.info(`Conversation ${conv.conversationId} status changed to "${current?.status}". Aborting turn.`);
+        return;
+      }
+
+      // Check if conversation elapsed duration hit 4-minute ceiling during the delay
+      const currentElapsed = Date.now() - new Date(current.startedAt).getTime();
+      if (currentElapsed >= MAX_AHT_MS) {
+        logger.warn(`[AHT 4-Min Rule] Conversation ${conv.conversationId} reached 4-minute ceiling during post-accept delay. Bot ceases replying.`);
+        current.status = 'ABANDONED';
+        current.endedAt = new Date();
+        current.endReason = `AHT_TIMEOUT_4MIN: Handling time exceeded ${maxAhtMins} minutes. Customer ceased replying.`;
+        await current.save();
+
+        crmSocketClient.disconnectConversation(conv.conversationId);
+
+        broadcastEvent('conversation:updated', {
+          conversationId: conv.conversationId,
+          status: 'ABANDONED',
+          endReason: current.endReason,
+        });
+        return;
+      }
+    }
 
     // 6. Generate Next Customer Turn
     const messages = await getConversationMessages(conv._id);

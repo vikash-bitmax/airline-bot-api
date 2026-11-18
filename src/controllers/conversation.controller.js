@@ -202,33 +202,72 @@ export const raiseConversationQuery = async (req, res, next) => {
       category,
       initialMessage,
       useMockCrm = false,
+      runId: customRunId,
+      timingConfig,
+      minWaitSec,
+      maxWaitSec,
+      maxAhtMins,
+      idleStopMins,
+      pilotMode,
     } = req.body || {};
 
-    // Ensure an active ad-hoc simulation run exists
-    let run = await SimulationRun.findOne({
-      name: 'On-Demand Support Queries',
-      status: { $in: ['RUNNING', 'PENDING'] },
-    });
+    const resolvedTimingConfig = {
+      minWaitSec: Number(timingConfig?.minWaitSec ?? minWaitSec ?? 120),
+      maxWaitSec: Number(timingConfig?.maxWaitSec ?? maxWaitSec ?? 150),
+      maxAhtMins: Number(timingConfig?.maxAhtMins ?? maxAhtMins ?? 4),
+      idleStopMins: Number(timingConfig?.idleStopMins ?? idleStopMins ?? 4),
+      pilotMode: timingConfig?.pilotMode || pilotMode || 'MANUAL',
+    };
 
-    if (!run) {
-      run = await SimulationRun.create({
-        runId: `RUN-ADHOC-${uuidv4().substring(0, 6).toUpperCase()}`,
-        name: 'On-Demand Support Queries',
-        environment: useMockCrm ? 'TEST' : 'LOCAL',
-        status: 'RUNNING',
-        startedAt: new Date(),
-        selection: { personaIds: [personaId], scenarioIds: [scenarioId], strategy: 'MANUAL' },
-        configuration: {
-          totalCustomers: 1,
-          concurrency: 1,
-          maxTurnsPerConversation: 20,
-          randomSeed: uuidv4(),
-        },
-      });
+    // Ensure an active simulation run exists (or use customRunId if provided)
+    let run = null;
+    if (customRunId) {
+      run = await SimulationRun.findOne({ runId: customRunId });
+      if (!run) {
+        run = await SimulationRun.create({
+          runId: customRunId,
+          name: customRunId.startsWith('RUN-AUTOPILOT') ? 'Auto-Pilot Support Queries' : `Simulation ${customRunId}`,
+          environment: useMockCrm ? 'TEST' : 'LOCAL',
+          status: 'RUNNING',
+          startedAt: new Date(),
+          selection: { personaIds: [personaId], scenarioIds: [scenarioId], strategy: 'MANUAL' },
+          configuration: {
+            totalCustomers: 1,
+            concurrency: 1,
+            maxTurnsPerConversation: 20,
+            randomSeed: uuidv4(),
+          },
+        });
+      } else {
+        run.status = 'RUNNING';
+        await run.save();
+      }
     } else {
-      run.environment = useMockCrm ? 'TEST' : 'LOCAL';
-      run.status = 'RUNNING';
-      await run.save();
+      run = await SimulationRun.findOne({
+        name: 'On-Demand Support Queries',
+        status: { $in: ['RUNNING', 'PENDING'] },
+      });
+
+      if (!run) {
+        run = await SimulationRun.create({
+          runId: `RUN-ADHOC-${uuidv4().substring(0, 6).toUpperCase()}`,
+          name: 'On-Demand Support Queries',
+          environment: useMockCrm ? 'TEST' : 'LOCAL',
+          status: 'RUNNING',
+          startedAt: new Date(),
+          selection: { personaIds: [personaId], scenarioIds: [scenarioId], strategy: 'MANUAL' },
+          configuration: {
+            totalCustomers: 1,
+            concurrency: 1,
+            maxTurnsPerConversation: 20,
+            randomSeed: uuidv4(),
+          },
+        });
+      } else {
+        run.environment = useMockCrm ? 'TEST' : 'LOCAL';
+        run.status = 'RUNNING';
+        await run.save();
+      }
     }
 
     const conversation = await conversationOrchestrator.startConversation({
@@ -236,6 +275,7 @@ export const raiseConversationQuery = async (req, res, next) => {
       personaId,
       scenarioId,
       useMockCrm,
+      timingConfig: resolvedTimingConfig,
       customFixture: (customerName || passengerEmail || pnr || flightNumber || category || initialMessage) ? {
         passengerName: customerName,
         passengerEmail,

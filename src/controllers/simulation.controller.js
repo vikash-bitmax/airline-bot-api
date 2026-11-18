@@ -171,14 +171,49 @@ export const resumeSimulation = async (req, res, next) => {
 export const cancelSimulation = async (req, res, next) => {
   try {
     const { runId } = req.params;
-    const run = await SimulationRun.findOneAndUpdate(
-      { runId },
-      { $set: { status: 'CANCELLED', completedAt: new Date() } },
-      { new: true }
-    );
+    const run = await SimulationRun.findOne({ runId });
     if (!run) return res.status(404).json({ success: false, message: 'Simulation run not found' });
-    broadcastEvent('simulation:cancelled', { runId: run.runId });
-    return res.status(200).json({ success: true, data: run });
+
+    run.status = 'CANCELLED';
+    run.completedAt = new Date();
+    await run.save();
+
+    // Cascade stop: Halt all active conversations under this simulation run
+    const activeConvs = await Conversation.find({
+      simulationRun: run._id,
+      status: { $in: ['ACTIVE', 'RUNNING', 'WAITING', 'NEW', 'WAITING_FOR_AGENT', 'WAITING_FOR_CUSTOMER'] },
+    });
+
+    for (const conv of activeConvs) {
+      conv.status = 'CANCELLED';
+      conv.endedAt = new Date();
+      conv.endReason = 'SIMULATION_STOPPED_BY_USER';
+      await conv.save();
+
+      crmSocketClient.disconnectConversation(conv.conversationId);
+
+      broadcastEvent('conversation:updated', {
+        conversationId: conv.conversationId,
+        status: 'CANCELLED',
+        endReason: 'SIMULATION_STOPPED_BY_USER',
+      });
+      broadcastEvent('conversation:completed', {
+        conversationId: conv.conversationId,
+        outcome: { goalAchieved: false, reason: 'SIMULATION_STOPPED_BY_USER' },
+      });
+    }
+
+    broadcastEvent('simulation:cancelled', {
+      runId: run.runId,
+      stoppedConversationsCount: activeConvs.length,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: `Simulation ${runId} stopped successfully (${activeConvs.length} active conversation(s) halted)`,
+      data: run,
+      stoppedConversationsCount: activeConvs.length,
+    });
   } catch (err) {
     next(err);
   }
