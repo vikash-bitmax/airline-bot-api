@@ -4,7 +4,7 @@ import Persona from '../models/Persona.model.js';
 import Scenario from '../models/Scenario.model.js';
 import SimulationRun from '../models/SimulationRun.model.js';
 
-import { generateCustomerFixture } from './fixture-generator.service.js';
+import { generateCustomerFixture, generateCustomerFixtureFromDb } from './fixture-generator.service.js';
 import {
   initializePersonaState,
   updatePersonaDynamics,
@@ -20,11 +20,13 @@ import { createMessage, getConversationMessages } from './message.service.js';
 import { recordConversationEvent, updateConversationProgress } from './conversation-state.service.js';
 import { interpretAgentMessage, validateAuthoritativeEvidence } from './event-interpreter.service.js';
 import { calculateHumanTimings, sleep } from './human-typing.service.js';
+import { extractDisclosedFacts, detectAgentBehavior } from './disclosed-facts.service.js';
 import GeminiProvider from '../ai/providers/gemini.provider.js';
 import crmClient from '../integrations/crm/crm-client.js';
 import crmSocketClient from '../integrations/crm/crm-socket.client.js';
 import mockCrmClient from '../integrations/crm/mock-crm-client.js';
 import { evaluateConversation } from './evaluation.service.js';
+import { evaluateQc } from './qc-evaluation.service.js';
 import logger from '../utils/logger.js';
 import { broadcastEvent } from '../../server.js';
 
@@ -150,8 +152,8 @@ export class ConversationOrchestrator {
 
     const conversationId = `CONV-${uuidv4().substring(0, 8).toUpperCase()}`;
 
-    // 1. Generate deterministic fixture
-    const customerFixture = generateCustomerFixture({
+    // 1. Generate fixture from seeded database customer (with deterministic fallback)
+    const customerFixture = await generateCustomerFixtureFromDb({
       randomSeed: randomSeed || simulationRun.configuration?.randomSeed || 'default-seed',
       conversationId,
       scenarioRequirements: scenario.requiredFacts,
@@ -421,10 +423,19 @@ export class ConversationOrchestrator {
       });
     }
 
-    // 4. Update dynamic persona emotional metrics
+    // 4. Update dynamic persona emotional metrics & track disclosed facts
+    const disclosedFacts = extractDisclosedFacts(priorMsgs, conv.customerFixture?.facts);
+    const agentBehavior = detectAgentBehavior(agentMessage, {
+      disclosedFacts,
+      recentHistory: priorMsgs,
+    });
+
     const updatedPersonaState = updatePersonaDynamics({
       currentState: conv.dynamicPersonaState,
       eventType,
+      lastAgentBehavior: agentBehavior,
+      scenarioState: updatedScenarioState.currentState,
+      disclosedFacts,
       turnNumber: conv.scenarioProgress.turnCount + 1,
     });
 
@@ -513,6 +524,7 @@ export class ConversationOrchestrator {
         customerObjective: scenario.customerObjective,
       },
       permittedFacts,
+      disclosedFacts,
       transcript: messages.messages,
     });
 
@@ -658,8 +670,11 @@ export class ConversationOrchestrator {
     const conv = await Conversation.findById(conversationId);
     if (!conv) return;
 
-    // Run deterministic evaluation
+    // Run deterministic scenario & persona evaluation
     const evalResult = await evaluateConversation(conv._id);
+
+    // Run post-chat Quality Control (QC) scorecard evaluation for L1 (Agent) & L2 (TL/QA)
+    const qcResult = await evaluateQc({ conversationId: conv._id, reason });
 
     const finalStatus =
       reason === 'CRM_RESOLVED' ? 'RESOLVED' :
@@ -677,6 +692,7 @@ export class ConversationOrchestrator {
         'outcome.goalAchieved': evalResult.goalAchieved,
         'outcome.score': evalResult.overallScore,
         'outcome.assertionResults': evalResult,
+        ...(qcResult ? { 'outcome.qcReport': qcResult } : {}),
       },
     });
 
@@ -685,7 +701,15 @@ export class ConversationOrchestrator {
     broadcastEvent('conversation:completed', {
       conversationId: conv.conversationId,
       outcome: evalResult,
+      qcReport: qcResult,
     });
+
+    if (qcResult) {
+      broadcastEvent('conversation:qc_completed', {
+        conversationId: conv.conversationId,
+        qcReport: qcResult,
+      });
+    }
   }
 }
 

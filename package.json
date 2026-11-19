@@ -10,6 +10,7 @@
     "worker": "node src/queues/simulation.worker.js",
     "seed:personas": "node seeds/personas.seed.js",
     "seed:scenarios": "node seeds/scenarios.seed.js",
+    "seed:customers": "node seeds/customers.seed.js",
     "seed": "node seeds/personas.seed.js && node seeds/scenarios.seed.js",
     "test": "node --test \"tests/**/*.test.js\"",
     "test:unit": "node --test \"tests/**/*.test.js\""

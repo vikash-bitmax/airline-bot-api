@@ -94,6 +94,12 @@ const conversationSchema = new mongoose.Schema(
       satisfaction: { type: Number, min: 0, max: 10, default: 5 },
       supervisorRequests: { type: Number, default: 0 },
       topicSwitchCount: { type: Number, default: 0 },
+      lastAgentBehavior: { type: String, default: "NONE" },
+      disclosedFacts: [{ type: String }],
+    },
+
+    dynamicPersonaState: {
+      type: mongoose.Schema.Types.Mixed,
     },
 
     messageSequence: {

@@ -3,6 +3,8 @@ import Conversation from '../models/Conversation.model.js';
 import ConversationMessage from '../models/ConversationMessage.model.js';
 import ConversationEvent from '../models/ConversationEvent.model.js';
 import SimulationRun from '../models/SimulationRun.model.js';
+import QcReport from '../models/QcReport.model.js';
+import { evaluateQc } from '../services/qc-evaluation.service.js';
 import conversationOrchestrator from '../services/conversation-orchestrator.service.js';
 import { broadcastEvent } from '../../server.js';
 
@@ -304,6 +306,32 @@ export const raiseConversationQuery = async (req, res, next) => {
         initialMessages: messages,
       },
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getConversationQcReport = async (req, res, next) => {
+  try {
+    const { conversationId } = req.params;
+    let report = await QcReport.findOne({
+      $or: [{ conversationId }, { conversation: conversationId }],
+    }).lean();
+
+    if (!report) {
+      const conv = await Conversation.findOne({
+        $or: [{ conversationId }, { _id: conversationId }],
+      });
+      if (conv) {
+        report = await evaluateQc({ conversationId: conv._id, reason: conv.status });
+      }
+    }
+
+    if (!report) {
+      return res.status(404).json({ success: false, message: 'QC report not found' });
+    }
+
+    return res.json({ success: true, data: report });
   } catch (err) {
     next(err);
   }
