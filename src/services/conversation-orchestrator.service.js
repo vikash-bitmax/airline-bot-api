@@ -1,5 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import Conversation from '../models/Conversation.model.js';
+import ConversationMessage from '../models/ConversationMessage.model.js';
 import Persona from '../models/Persona.model.js';
 import Scenario from '../models/Scenario.model.js';
 import SimulationRun from '../models/SimulationRun.model.js';

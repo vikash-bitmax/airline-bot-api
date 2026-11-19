@@ -15,13 +15,80 @@ import {
 } from '../../services/disclosed-facts.service.js';
 import logger from '../../utils/logger.js';
 
+// Resilient fallback order of Gemini models with active free tier quotas
+const DEFAULT_MODEL_CASCADE = [
+  'gemini-3.5-flash-lite',
+  'gemini-3-flash-preview',
+  'gemini-flash-lite-latest',
+  'gemini-3.1-flash-lite',
+  'gemini-3.8-flash',
+];
+
 export class GeminiProvider extends LlmProviderInterface {
   constructor(config = {}) {
     super();
     this.apiKey = config.apiKey || env.GEMINI.API_KEY;
-    this.model = config.model || env.GEMINI.MODEL || 'gemini-3.8-flash';
+    this.model = config.model || env.GEMINI.MODEL || 'gemini-3.5-flash-lite';
     this.timeoutMs = config.timeoutMs || env.GEMINI.TIMEOUT_MS || 15000;
     this.maxRetries = config.maxRetries || env.GEMINI.MAX_RETRIES || 2;
+    this.modelCascade = [this.model, ...DEFAULT_MODEL_CASCADE.filter((m) => m !== this.model)];
+  }
+
+  /**
+   * General-purpose Gemini generation endpoint used for QC evaluation and ad-hoc audits
+   */
+  async generate({ contents, generationConfig = {} }) {
+    if (!this.apiKey) {
+      throw new Error('No Gemini API key provided');
+    }
+
+    let lastError = null;
+
+    for (const modelName of this.modelCascade) {
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${this.apiKey}`;
+          const payload = {
+            contents,
+            generationConfig: {
+              temperature: 0.1,
+              ...generationConfig,
+            },
+          };
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+
+          clearTimeout(timeout);
+
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            const msg = errData?.error?.message || response.statusText;
+            throw new Error(`HTTP ${response.status} (${msg})`);
+          }
+
+          const data = await response.json();
+          return data;
+        } catch (err) {
+          lastError = err;
+          // If rate-limited (429) or model discontinued (404), break immediately to next model in cascade
+          if (err.message.includes('429') || err.message.includes('404')) {
+            logger.warn(`Model ${modelName} unavailable (${err.message}). Shifting to next model in cascade.`);
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+    }
+
+    throw lastError || new Error('All models in Gemini cascade failed');
   }
 
   async generateCustomerTurn(context) {
@@ -47,90 +114,101 @@ export class GeminiProvider extends LlmProviderInterface {
 
     let lastError = null;
 
-    for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${this.model}:generateContent?key=${this.apiKey}`;
-        const payload = {
-          contents: [
-            { role: 'user', parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] },
-          ],
-          generationConfig: {
-            temperature: 0.6,
-            responseMimeType: 'application/json',
-          },
-        };
+    // Try primary and fallback models in cascade
+    for (const currentModel of this.modelCascade) {
+      for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
+        try {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${this.apiKey}`;
+          const payload = {
+            contents: [
+              { role: 'user', parts: [{ text: `${systemPrompt}\n\n${userPrompt}` }] },
+            ],
+            generationConfig: {
+              temperature: 0.6,
+              responseMimeType: 'application/json',
+            },
+          };
 
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
 
-        const response = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeout);
-
-        if (!response.ok) {
-          throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
-        }
-
-        const data = await response.json();
-        const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
-
-        if (!rawText) {
-          throw new Error('Empty response from Gemini API');
-        }
-
-        // Clean & parse JSON safely
-        let parsed = cleanAndExtractJson(rawText);
-
-        // Attempt recovery if raw text wasn't pure JSON
-        if (!parsed) {
-          logger.warn('Failed to parse Gemini JSON output. Attempting recovery parser...');
-          parsed = recoverMalformedOutput(rawText, enrichedContext.scenarioContext?.currentState);
-        }
-
-        const validation = validateCustomerOutput(parsed);
-
-        if (!validation.success) {
-          logger.warn(`Gemini output failed schema validation (attempt ${attempt + 1}):`, validation.error);
-          if (attempt < this.maxRetries) {
-            // Append correction prompt for retry
-            userPrompt += `\n\n[CORRECTION REQUIRED]: Your previous output failed JSON validation: ${validation.error.message}. Output ONLY valid JSON adhering strictly to the schema.`;
-            continue;
-          }
-          return this.generateSyntheticFallback(enrichedContext, startTime);
-        }
-
-        // Apply backend privacy guardrails against premature PNR leakage
-        const latestAgentMsg = [...transcript].reverse().find((m) => m.senderType === 'AGENT');
-        const validatedData = validation.data;
-
-        if (validatedData.messageParts?.[0]?.text) {
-          validatedData.messageParts[0].text = enforceBackendPrivacyGuardrail({
-            customerReplyText: validatedData.messageParts[0].text,
-            agentMessageText: latestAgentMsg?.content || '',
-            permittedFacts,
-            disclosedFacts,
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
           });
-        }
 
-        return {
-          output: validatedData,
-          metadata: {
-            provider: 'GEMINI',
-            model: this.model,
-            latencyMs: Date.now() - startTime,
-            tokens: data.usageMetadata?.totalTokenCount || 0,
-          },
-        };
-      } catch (err) {
-        lastError = err;
-        logger.warn(`Gemini attempt ${attempt + 1} failed (${err.message}).`);
-        if (attempt < this.maxRetries) {
-          await new Promise((r) => setTimeout(r, 500));
+          clearTimeout(timeout);
+
+          if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            const msg = errData?.error?.message || response.statusText;
+            throw new Error(`Gemini API error: ${response.status} ${msg}`);
+          }
+
+          const data = await response.json();
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+          if (!rawText) {
+            throw new Error('Empty response from Gemini API');
+          }
+
+          // Clean & parse JSON safely
+          let parsed = cleanAndExtractJson(rawText);
+
+          // Attempt recovery if raw text wasn't pure JSON
+          if (!parsed) {
+            logger.warn('Failed to parse Gemini JSON output. Attempting recovery parser...');
+            parsed = recoverMalformedOutput(rawText, enrichedContext.scenarioContext?.currentState);
+          }
+
+          const validation = validateCustomerOutput(parsed);
+
+          if (!validation.success) {
+            logger.warn(`Gemini output failed schema validation (attempt ${attempt + 1}):`, validation.error);
+            if (attempt < this.maxRetries) {
+              // Append correction prompt for retry
+              userPrompt += `\n\n[CORRECTION REQUIRED]: Your previous output failed JSON validation: ${validation.error.message}. Output ONLY valid JSON adhering strictly to the schema.`;
+              continue;
+            }
+            return this.generateSyntheticFallback(enrichedContext, startTime);
+          }
+
+          // Apply backend privacy guardrails against premature PNR leakage
+          const latestAgentMsg = [...transcript].reverse().find((m) => m.senderType === 'AGENT');
+          const validatedData = validation.data;
+
+          if (validatedData.messageParts?.[0]?.text) {
+            validatedData.messageParts[0].text = enforceBackendPrivacyGuardrail({
+              customerReplyText: validatedData.messageParts[0].text,
+              agentMessageText: latestAgentMsg?.content || '',
+              permittedFacts,
+              disclosedFacts,
+            });
+          }
+
+          return {
+            output: validatedData,
+            metadata: {
+              provider: 'GEMINI',
+              model: currentModel,
+              latencyMs: Date.now() - startTime,
+              tokens: data.usageMetadata?.totalTokenCount || 0,
+            },
+          };
+        } catch (err) {
+          lastError = err;
+          logger.warn(`Gemini attempt ${attempt + 1} with ${currentModel} failed (${err.message}).`);
+
+          // If rate limited (429) or discontinued (404), break immediately to next model
+          if (err.message.includes('429') || err.message.includes('404')) {
+            break;
+          }
+
+          if (attempt < this.maxRetries) {
+            await new Promise((r) => setTimeout(r, 400));
+          }
         }
       }
     }
@@ -175,18 +253,59 @@ export class GeminiProvider extends LlmProviderInterface {
       (personaContext.tone || '').toLowerCase().includes('angr') ||
       Number(personaContext.frustration || 0) >= 6;
 
-    // Detect if agent explicitly asked for booking reference, PNR, or passenger details
-    const agentAskedForDetails =
+    // Detect if agent asked for contact info (email, phone, number, contact, emal)
+    const agentAskedForContact =
+      lastAgentText.includes('email') ||
+      lastAgentText.includes('emal') ||
+      lastAgentText.includes('mail') ||
+      lastAgentText.includes('number') ||
+      lastAgentText.includes('phone') ||
+      lastAgentText.includes('contact') ||
+      lastAgentText.includes('mobile');
+
+    // Detect if agent asked for passenger identity/name
+    const agentAskedForName =
+      lastAgentText.includes('your name') ||
+      lastAgentText.includes('passenger name') ||
+      lastAgentText.includes('full name') ||
+      lastAgentText.includes('who is speaking');
+
+    // Detect if agent asked for general booking details/information (including typos like detials, detals)
+    const agentAskedForGeneralDetails =
+      lastAgentText.includes('detail') ||
+      lastAgentText.includes('detial') ||
+      lastAgentText.includes('detal') ||
+      lastAgentText.includes('information') ||
+      lastAgentText.includes('booking info');
+
+    // Detect if agent explicitly asked for booking reference or PNR
+    const agentAskedForPnr =
       lastAgentText.includes('pnr') ||
       lastAgentText.includes('booking reference') ||
       lastAgentText.includes('booking code') ||
       lastAgentText.includes('ticket number') ||
       lastAgentText.includes('reservation code') ||
       (lastAgentText.includes('booking') &&
-        (lastAgentText.includes('details') ||
-          lastAgentText.includes('provide') ||
+        (lastAgentText.includes('provide') ||
           lastAgentText.includes('share') ||
-          lastAgentText.includes('give')));
+          lastAgentText.includes('give') ||
+          lastAgentText.includes('have')));
+
+    // Detect if agent offered alternative flights or rebooking
+    const agentOfferedFlightOptions =
+      lastAgentText.includes('another flight') ||
+      lastAgentText.includes('another flights') ||
+      lastAgentText.includes('other flight') ||
+      lastAgentText.includes('other flights') ||
+      lastAgentText.includes('different flight') ||
+      lastAgentText.includes('provide flight') ||
+      lastAgentText.includes('available flight') ||
+      lastAgentText.includes('next flight') ||
+      lastAgentText.includes('alternative') ||
+      lastAgentText.includes('rebook') ||
+      lastAgentText.includes('1pm') ||
+      lastAgentText.includes('1:00') ||
+      lastAgentText.includes('2pm');
 
     // ── SCENARIO & BEHAVIORAL DISPATCH ──
 
@@ -236,15 +355,13 @@ export class GeminiProvider extends LlmProviderInterface {
     }
     // 9. Initial Greeting / First Turn (Test 1)
     else if (customerTurns === 0 || scenarioContext.currentState === 'INTRODUCE_ISSUE') {
-      if (agentAskedForDetails) {
-        // Agent immediately asked for PNR in first turn
+      if (agentAskedForPnr || agentAskedForGeneralDetails) {
         if (permittedFacts.pnr) {
           messageText = `My booking reference is ${permittedFacts.pnr} for flight ${permittedFacts.flightNumber || 'SW-101'}. It was cancelled today and I need help.`;
         } else {
           messageText = `I don't have my booking reference right now, but my name is ${permittedFacts.passengerName || 'on the ticket'}. Can you look it up?`;
         }
       } else {
-        // Standard initial contact (Explains issue WITHOUT revealing PNR)
         const initialOpeners = [
           `Hello, my flight ${permittedFacts.flightNumber || 'SW-101'} on route ${permittedFacts.route || 'LHR to JFK'} has been cancelled. Can you please assist me with rebooking or a refund?`,
           `Hi, I was informed that my upcoming flight ${permittedFacts.flightNumber || 'SW-101'} has been cancelled today. What are my options?`,
@@ -253,10 +370,22 @@ export class GeminiProvider extends LlmProviderInterface {
         messageText = pickUnused(initialOpeners);
       }
     }
-    // 10. Agent requested booking reference / PNR (Test 2 & Test 3)
-    else if (agentAskedForDetails) {
+    // 10. Agent requested Contact Info (Email and/or Phone)
+    else if (agentAskedForContact) {
+      const email = permittedFacts.passengerEmail || 'passenger@example.test';
+      const phone = permittedFacts.passengerPhone || '+1-555-0199';
+      const name = permittedFacts.passengerName || 'the passenger';
+
+      const contactTemplates = [
+        `Certainly. My email address is ${email} and my phone number is ${phone}.`,
+        `Here are my contact details: Email: ${email}, Phone: ${phone}. It is under the name ${name}.`,
+        `Sure, you can reach me at ${phone} or via email at ${email}.`,
+      ];
+      messageText = pickUnused(contactTemplates);
+    }
+    // 11. Agent requested Booking Reference / PNR (Test 2 & Test 3)
+    else if (agentAskedForPnr) {
       if (permittedFacts.pnr) {
-        // Test 2: PNR available
         const pnrTemplates = [
           `Sure, my booking reference is ${permittedFacts.pnr} under ${permittedFacts.passengerName || 'my name'}.`,
           `Of course. My PNR is ${permittedFacts.pnr}, flight ${permittedFacts.flightNumber || 'SW-101'}.`,
@@ -264,30 +393,70 @@ export class GeminiProvider extends LlmProviderInterface {
         ];
         messageText = pickUnused(pnrTemplates);
       } else {
-        // Test 3: PNR unavailable
         messageText = `I don't have my booking reference with me right now, but my name is ${permittedFacts.passengerName || 'on the ticket'}. Can you look up my reservation by name?`;
       }
     }
-    // 11. Agent offered flight times or options
-    else if (
-      lastAgentText.includes('1pm') ||
-      lastAgentText.includes('1:00') ||
-      lastAgentText.includes('2pm') ||
-      lastAgentText.includes('rebook') ||
-      lastAgentText.includes('alternative')
-    ) {
-      messageText = 'What time does that alternative flight depart and arrive? Could you please confirm if it is a direct flight?';
+    // 12. Agent requested General Details / Info (e.g. "can i get your detials")
+    else if (agentAskedForGeneralDetails) {
+      const pnr = permittedFacts.pnr || 'SW565178';
+      const name = permittedFacts.passengerName || 'the passenger';
+      const flight = permittedFacts.flightNumber || 'SW-101';
+      const email = permittedFacts.passengerEmail || 'passenger@example.test';
+
+      const detailsTemplates = [
+        `Certainly. My booking reference is ${pnr} for flight ${flight}, booked under ${name}. My email is ${email}.`,
+        `Here are my booking details: PNR is ${pnr}, passenger name is ${name}, and flight number is ${flight}.`,
+        `Sure, my reference code is ${pnr} under ${name}. Please let me know what options you have for my cancelled flight.`,
+      ];
+      messageText = pickUnused(detailsTemplates);
     }
-    // 12. Inconsistent or conflicting info check (Test 12)
+    // 13. Agent requested Passenger Name
+    else if (agentAskedForName) {
+      messageText = pickUnused([
+        `My full name is ${permittedFacts.passengerName || 'on the ticket'}.`,
+        `The reservation is under ${permittedFacts.passengerName || 'my name'}.`,
+      ]);
+    }
+    // 14. Agent offered alternative flights / schedule options
+    else if (agentOfferedFlightOptions) {
+      const flightTemplates = [
+        'What options do you have? Could you please share the departure and arrival times for the available flights?',
+        'I would appreciate that. When does the next available flight depart, and is it a direct flight?',
+        'Please let me know the flight number and schedule for the alternative option so I can plan accordingly.',
+        'I am flexible with timings as long as it gets me to my destination today. What are the flight details?',
+      ];
+      messageText = pickUnused(flightTemplates);
+    }
+    // 15. Inconsistent or conflicting info check (Test 12)
     else if (lastAgentText.includes('confirmed') && !lastAgentText.includes('cancel')) {
       messageText = `Wait, you mentioned it is on time, but I received an alert stating flight ${permittedFacts.flightNumber || 'SW-101'} was cancelled. Could you please re-verify the status?`;
     }
-    // Default contextual fallback
+    // 16. Agent asked for customer preference (rebook vs refund)
+    else if (lastAgentText.includes('refund') && (lastAgentText.includes('rebook') || lastAgentText.includes('or'))) {
+      messageText = pickUnused([
+        'I would prefer to be rebooked on the next available flight if possible. If no flights are available today, I will take a full refund.',
+        'A rebooking on the next earliest flight is my preference. What options can you offer?',
+      ]);
+    }
+    // 17. Default Contextual Rotation (Strictly avoids repeating the same sentence)
     else {
       if (lastAgentText.includes('wait') || lastAgentText.includes('moment') || lastAgentText.includes('check')) {
-        messageText = 'Sure, I will wait while you look into that.';
+        const waitTemplates = [
+          'Sure, I will wait while you look into that.',
+          'Understood, thank you for checking. I will stay on the line.',
+          'Take your time, please let me know once you have the details.',
+        ];
+        messageText = pickUnused(waitTemplates);
       } else {
-        messageText = 'Understood. Please let me know what options are available to resolve this.';
+        const generalTurnTemplates = [
+          'Understood. What are the next steps to get this sorted out?',
+          'Alright, please let me know what you need from me to proceed.',
+          'Okay, I am ready to follow through with whatever is needed to resolve this.',
+          'Could you please explain what options I currently have for my booking?',
+          'Thanks for checking. Please let me know as soon as you have an update.',
+          'I appreciate your assistance. What is the status of my ticket right now?',
+        ];
+        messageText = pickUnused(generalTurnTemplates);
       }
     }
 
@@ -303,7 +472,7 @@ export class GeminiProvider extends LlmProviderInterface {
       schemaVersion: '1.0',
       messageParts: [{ type: 'text', text: messageText.trim() }],
       intent: scenarioContext.currentState || 'DISCUSS_OPTIONS',
-      speechAct: agentAskedForDetails ? 'DISCLOSURE' : 'STATEMENT',
+      speechAct: (agentAskedForPnr || agentAskedForContact || agentAskedForGeneralDetails || agentAskedForName) ? 'DISCLOSURE' : 'STATEMENT',
       emotionExpression: (personaContext.emotionalState || 'neutral').toUpperCase(),
       behaviorTags: ['DIRECT_COMMUNICATION', 'SYNTHETIC_FALLBACK'],
     };

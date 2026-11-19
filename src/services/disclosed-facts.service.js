@@ -251,7 +251,7 @@ export const enforceBackendPrivacyGuardrail = ({
     return customerReplyText;
   }
 
-  // Check if agent explicitly asked for PNR
+  // Check if agent explicitly asked for PNR, details, or contact information
   const agentLower = (agentMessageText || '').toLowerCase();
   const agentExplicitlyAskedPnr =
     agentLower.includes('pnr') ||
@@ -259,7 +259,14 @@ export const enforceBackendPrivacyGuardrail = ({
     agentLower.includes('booking code') ||
     agentLower.includes('ticket number') ||
     agentLower.includes('reservation code') ||
-    (agentLower.includes('booking') && (agentLower.includes('details') || agentLower.includes('provide') || agentLower.includes('share')));
+    agentLower.includes('detail') ||
+    agentLower.includes('detial') ||
+    agentLower.includes('detal') ||
+    agentLower.includes('email') ||
+    agentLower.includes('emal') ||
+    agentLower.includes('number') ||
+    agentLower.includes('contact') ||
+    (agentLower.includes('booking') && (agentLower.includes('details') || agentLower.includes('provide') || agentLower.includes('share') || agentLower.includes('give') || agentLower.includes('have')));
 
   // If agent asked for it, disclosure is authorized!
   if (agentExplicitlyAskedPnr) {
