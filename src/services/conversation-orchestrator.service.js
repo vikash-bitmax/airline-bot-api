@@ -528,7 +528,11 @@ export class ConversationOrchestrator {
     if (lastCustomerText && customerReplyText.trim().toLowerCase() === lastCustomerText) {
       logger.warn(`Duplicate reply detected for ${conv.conversationId}. Applying dynamic rephrasing.`);
       const lowerAgent = (agentMessage || '').toLowerCase();
-      if (lowerAgent.includes('wait') || lowerAgent.includes('moment') || lowerAgent.includes('check')) {
+      if (lowerAgent.includes('escalat') || lowerAgent.includes('escalta') || lowerAgent.includes('transfer') || lowerAgent.includes('supervisor')) {
+        customerReplyText = 'Please connect me with your supervisor immediately so we can get this resolved.';
+      } else if (lowerAgent.includes('fuck') || lowerAgent.includes('shit') || lowerAgent.includes('shut up')) {
+        customerReplyText = 'Your behavior is completely unacceptable. I demand to speak to a manager right now.';
+      } else if (lowerAgent.includes('wait') || lowerAgent.includes('moment') || lowerAgent.includes('check')) {
         customerReplyText = 'Sure, take your time. I will be waiting here.';
       } else if (lowerAgent.includes('pnr') || lowerAgent.includes('booking') || lowerAgent.includes('details')) {
         customerReplyText = `My booking reference is ${conv.customerFixture?.facts?.pnr || 'on file'} for flight ${conv.customerFixture?.facts?.flightNumber || 'SW-101'}.`;

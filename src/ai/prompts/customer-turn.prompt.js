@@ -5,9 +5,12 @@ export const buildCustomerTurnPrompt = ({
   transcript = [],
 }) => {
   const formattedTranscript = transcript
-    .slice(-6)
+    .slice(-8)
     .map((m) => `${m.senderType}: ${m.content}`)
     .join('\n');
+
+  const latestAgentMsg = [...transcript].reverse().find((m) => m.senderType === 'AGENT');
+  const latestAgentText = latestAgentMsg?.content || '';
 
   return `
 [CUSTOMER PERSONA]
@@ -28,14 +31,19 @@ ${JSON.stringify(permittedFacts, null, 2)}
 [RECENT CHAT TRANSCRIPT]
 ${formattedTranscript || '(No previous messages. This is the opening message.)'}
 
+[LATEST AGENT MESSAGE TO DIRECTLY ANSWER]
+"${latestAgentText}"
+
 [INSTRUCTION FOR THIS TURN]
-Directly reply to the latest AGENT message in the transcript above.
-- NEVER repeat previous messages or greetings from the transcript.
+Directly and specifically respond to the [LATEST AGENT MESSAGE TO DIRECTLY ANSWER] above:
+- If the agent states they are ESCALATING or TRANSFERRING this query/case (or getting a supervisor/manager): acknowledge the escalation directly in character (e.g. demand that the supervisor actually fixes it quickly, express frustration or relief, or ask how long the transfer will take).
+- If the agent states a time or asks a question (e.g. "at 1pm", "is tomorrow okay?"): directly answer whether that works for you or ask clarifying questions based on your Goal.
 - PRIVACY CHECK: Did the agent explicitly ask for your booking reference, PNR, flight number, or details?
   - ONLY IF YES: Provide your PNR (${permittedFacts?.pnr || 'available'}) and details from [ALLOWED FACTS].
-  - IF NO: DO NOT volunteer your PNR or ticket code yet! Answer their greeting or comment naturally like a real human.
-- If the agent says they are checking or asks you to wait, acknowledge patiently.
-- If the agent offers options (rebooking vs refund), state your preference clearly based on your Goal.
+  - IF NO: DO NOT volunteer your PNR or ticket code yet! Answer their statement naturally like a real human.
+- If the agent says they are checking or asks you to wait: acknowledge that you will wait.
+- If the agent offers options (rebooking vs refund): state your preference clearly based on your Goal.
+- NEVER repeat previous messages or greetings from the transcript.
 - Keep in character: ${personaContext.tone} tone, ${personaContext.messageLength} length.
 
 Respond with a JSON object conforming to:

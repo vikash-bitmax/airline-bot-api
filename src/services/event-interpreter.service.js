@@ -80,6 +80,19 @@ export const interpretAgentMessage = (text) => {
   }
 
   if (
+    lower.includes('escalat') || lower.includes('escalta') || lower.includes('transfer') ||
+    lower.includes('supervisor') || lower.includes('team lead') || lower.includes('floor lead') ||
+    lower.includes('manager') || lower.includes('passing this to') || lower.includes('handing over')
+  ) {
+    return {
+      eventType: 'AGENT_INITIATED_ESCALATION',
+      confidence: 0.95,
+      evidenceType: 'AGENT_MESSAGE',
+      description: 'Agent initiated escalation or transfer to supervisor/lead',
+    };
+  }
+
+  if (
     lower.includes('got it') || lower.includes('i got it') || lower.includes('found it') ||
     lower.includes('found your booking') || lower.includes('located your booking') ||
     lower.includes('pulling up') || lower.includes('pulled up') || lower.includes('i see your') ||

@@ -113,8 +113,67 @@ export class GeminiProvider extends LlmProviderInterface {
       lastAgentText.includes('provide your booking') ||
       (lastAgentText.includes('details') && (lastAgentText.includes('give') || lastAgentText.includes('get') || lastAgentText.includes('share') || lastAgentText.includes('provide')));
 
-    // ── State-aware contextual templates with strict anti-repetition ──
-    if (scenarioContext.currentState === 'INTRODUCE_ISSUE') {
+    // ── Global Contextual Overrides (takes precedence over generic state templates) ──
+    const agentIsEscalating =
+      lastAgentText.includes('escalat') ||
+      lastAgentText.includes('escalta') || // handles common typo "escaltaing"
+      lastAgentText.includes('transfer') ||
+      lastAgentText.includes('supervisor') ||
+      lastAgentText.includes('manager') ||
+      lastAgentText.includes('team lead') ||
+      lastAgentText.includes('floor lead') ||
+      lastAgentText.includes('lead') ||
+      lastAgentText.includes('passing this') ||
+      lastAgentText.includes('handing over');
+
+    const agentIsRude =
+      lastAgentText.includes('fuck') ||
+      lastAgentText.includes('shit') ||
+      lastAgentText.includes('shut up') ||
+      lastAgentText.includes('idiot') ||
+      lastAgentText.includes('stupid') ||
+      lastAgentText.includes('get lost');
+
+    const isAngry =
+      (personaContext.emotionalState || '').toLowerCase().includes('angr') ||
+      (personaContext.emotionalState || '').toLowerCase().includes('frustrat') ||
+      (personaContext.tone || '').toLowerCase().includes('angr') ||
+      Number(personaContext.frustration || 0) >= 6;
+
+    if (customerTurns > 0 && agentIsRude) {
+      messageText = 'Excuse me? That language is completely unacceptable and abusive. I demand to speak to your manager or supervisor right now!';
+    } else if (customerTurns > 0 && agentIsEscalating) {
+      if (isAngry) {
+        const angryEscalation = [
+          'Fine, escalate this, but make sure your supervisor actually resolves this instead of wasting more of my time.',
+          'Good, because this has been handled terribly. Please connect me to your supervisor or manager immediately.',
+          'Please do escalate it right now. I need someone who actually has the authority to solve my cancelled flight.',
+        ];
+        messageText = pickUnused(angryEscalation);
+      } else {
+        const politeEscalation = [
+          'Understood, thank you. I will wait for your supervisor or team lead to connect.',
+          'Okay, please let me know once the transfer to your lead is complete.',
+          'Sure, I will stay on the line while you escalate this to the supervisor.',
+        ];
+        messageText = pickUnused(politeEscalation);
+      }
+    } else if (
+      customerTurns > 0 &&
+      (lastAgentText.includes('1pm') ||
+        lastAgentText.includes('1:00') ||
+        lastAgentText.includes('2pm') ||
+        lastAgentText.includes('3pm') ||
+        lastAgentText.includes('morning') ||
+        lastAgentText.includes('tomorrow'))
+    ) {
+      const timeResponses = [
+        'Could you tell me the arrival time and flight number for that option? Is it a direct flight?',
+        'Does that alternative departure have any layovers? I need to reach my destination as soon as possible.',
+        'That timing might work for me. Can you confirm if my seat and baggage would be transferred automatically?',
+      ];
+      messageText = pickUnused(timeResponses);
+    } else if (scenarioContext.currentState === 'INTRODUCE_ISSUE') {
       if (customerTurns === 0) {
         // First contact
         const templates = [

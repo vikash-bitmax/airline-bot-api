@@ -29,7 +29,7 @@ export const env = {
 
   GEMINI: {
     API_KEY: process.env.GEMINI_API_KEY || '',
-    MODEL: process.env.GEMINI_MODEL || 'gemini-1.5-flash',
+    MODEL: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
     TIMEOUT_MS: parseInt(process.env.GEMINI_TIMEOUT_MS || '15000', 10),
     MAX_RETRIES: parseInt(process.env.GEMINI_MAX_RETRIES || '3', 10),
   },
