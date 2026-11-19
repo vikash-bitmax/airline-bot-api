@@ -160,10 +160,25 @@ export class ConversationOrchestrator {
     });
 
     if (customFixture) {
-      if (customFixture.passengerName) customerFixture.facts.passengerName = customFixture.passengerName;
-      if (customFixture.passengerEmail) customerFixture.facts.passengerEmail = customFixture.passengerEmail;
-      if (customFixture.pnr) customerFixture.facts.pnr = customFixture.pnr;
-      if (customFixture.flightNumber) customerFixture.facts.flightNumber = customFixture.flightNumber;
+      // Prevent persona names or simulation tags from masking real seeded customer identity
+      const isPersonaName = customFixture.passengerName && (
+        customFixture.passengerName.includes('(Sim)') ||
+        customFixture.passengerName.includes('(AutoPilot)') ||
+        customFixture.passengerName.toLowerCase() === persona.name?.toLowerCase() ||
+        customFixture.passengerName.toLowerCase().includes(persona.name?.toLowerCase())
+      );
+      if (customFixture.passengerName && !isPersonaName) {
+        customerFixture.facts.passengerName = customFixture.passengerName;
+      }
+      if (customFixture.passengerEmail && !customFixture.passengerEmail.includes('passenger.') && !customFixture.passengerEmail.endsWith('@example.test')) {
+        customerFixture.facts.passengerEmail = customFixture.passengerEmail;
+      }
+      if (customFixture.pnr && customFixture.pnr !== 'SW9941') {
+        customerFixture.facts.pnr = customFixture.pnr;
+      }
+      if (customFixture.flightNumber && customFixture.flightNumber !== 'SW-101') {
+        customerFixture.facts.flightNumber = customFixture.flightNumber;
+      }
     }
 
     // 2. Initialise states
