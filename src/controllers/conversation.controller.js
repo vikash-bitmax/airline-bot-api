@@ -1,3 +1,4 @@
+import mongoose from 'mongoose';
 import { v4 as uuidv4 } from 'uuid';
 import Conversation from '../models/Conversation.model.js';
 import ConversationMessage from '../models/ConversationMessage.model.js';
@@ -314,21 +315,26 @@ export const raiseConversationQuery = async (req, res, next) => {
 export const getConversationQcReport = async (req, res, next) => {
   try {
     const { conversationId } = req.params;
+    const isObjectId = mongoose.isValidObjectId(conversationId);
+
+    const conv = await Conversation.findOne(
+      isObjectId ? { $or: [{ conversationId }, { _id: conversationId }] } : { conversationId }
+    );
+
+    if (!conv) {
+      return res.status(404).json({ success: false, message: 'Conversation not found' });
+    }
+
     let report = await QcReport.findOne({
-      $or: [{ conversationId }, { conversation: conversationId }],
+      $or: [{ conversationId: conv.conversationId }, { conversation: conv._id }],
     }).lean();
 
     if (!report) {
-      const conv = await Conversation.findOne({
-        $or: [{ conversationId }, { _id: conversationId }],
-      });
-      if (conv) {
-        report = await evaluateQc({ conversationId: conv._id, reason: conv.status });
-      }
+      report = await evaluateQc({ conversationId: conv._id, reason: conv.status });
     }
 
     if (!report) {
-      return res.status(404).json({ success: false, message: 'QC report not found' });
+      return res.status(404).json({ success: false, message: 'QC report could not be generated' });
     }
 
     return res.json({ success: true, data: report });
