@@ -56,9 +56,12 @@ export const getConversationDetails = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Conversation not found' });
     }
 
-    const [messages, events] = await Promise.all([
+    const [messages, events, qcReport] = await Promise.all([
       ConversationMessage.find({ conversation: conversation._id }).sort({ sequenceNumber: 1 }).lean(),
       ConversationEvent.find({ conversation: conversation._id }).sort({ occurredAt: 1 }).lean(),
+      QcReport.findOne({
+        $or: [{ conversationId: conversation.conversationId }, { conversation: conversation._id }],
+      }).lean(),
     ]);
 
     return res.status(200).json({
@@ -67,6 +70,7 @@ export const getConversationDetails = async (req, res, next) => {
         conversation,
         messages,
         events,
+        qcReport: qcReport || conversation.outcome?.qcReport || null,
       },
     });
   } catch (error) {
